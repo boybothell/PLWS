@@ -1,0 +1,32 @@
+schema_version = 1
+models_root = "/mnt/d/lsj/models"
+
+[models.r1_7b]
+path = "DeepSeek-R1-Distill-Qwen-7B"
+family = "deepseek-r1-distill-qwen"
+
+[models.r1_14b]
+path = "DeepSeek-R1-Distill-Qwen-14B"
+family = "deepseek-r1-distill-qwen"
+
+[models.r1_32b]
+path = "DeepSeek-R1-Distill-Qwen-32B"
+family = "deepseek-r1-distill-qwen"
+tensor_parallel_size = 2
+
+[models.nemotron_8b]
+path = "Llama-3.1-Nemotron-Nano-8B-v1"
+family = "nemotron"
+
+[models.qwen3_4b]
+path = "Qwen3-4B"
+family = "qwen3"
+
+[models.qwen3_8b]
+path = "Qwen3-8B"
+family = "qwen3"
+
+[models.qwen3_30b_a3b]
+path = "Qwen3-30B-A3B-Thinking-2507"
+family = "qwen3"
+tensor_parallel_size = 2

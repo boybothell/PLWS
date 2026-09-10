@@ -1,0 +1,19 @@
+# Local env and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+
+# Machine products and local inputs
+results/
+samples/
+logs/
+tables/
+figures/
+
+# Local progress, not source
+STATUS.md
+docs/log.md

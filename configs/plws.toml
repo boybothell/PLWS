@@ -1,0 +1,23 @@
+schema_version = 1
+
+[method]
+name = "plws"
+k = 4
+mss = 10
+tau = 0.995
+eps = 0.03
+lexicon = "core"
+
+[paths]
+samples = "samples"
+results = "results"
+upstream = "results/upstream"
+runs = "results/runs"
+reports = "results/reports"
+cache = "results/cache"
+archive = "results/archive"
+
+[compatibility]
+legacy_package = "attn_early_exit"
+preserve_legacy_scripts = true
+samples_read_only = true

@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# Dense every-step trials for soft-Pareto multimodel.
+#
+#   MODEL_TAG=nemotron_8b DATASET=math-500 GPUS=3,4 bash scripts/run_dense_trials_model.sh
+#   MODEL_TAG=r1_32b DATASET=olympiadbench GPUS=1,2 TP=2 bash scripts/run_dense_trials_model.sh
+#
+# Dense trials are frozen upstream inputs shared by PLWS and diagnostics.
+# They are not PLWS outputs.
+#
+# Writes:
+#   results/upstream/dense_trials/dense_G_<MODEL_TAG>/<DATASET>/dense_puma/{trial_answers,answers}.json
+#   results/upstream/dense_trials/dense_G_<MODEL_TAG>/<DATASET>/per_sample.json
+set -euo pipefail
+
+AE="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+export PLWS_ROOT="$AE"
+PUMA_ROOT="${PUMA_ROOT:-$AE/../PUMA}"
+PUMA_ROOT="$(cd "$PUMA_ROOT" && pwd)"
+PY=/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python
+AE_PY="${AE_PY:-$AE/.venv/bin/python}"
+[[ -x "$AE_PY" ]] || AE_PY=python3
+export PYTHONPATH="$AE/src${PYTHONPATH:+:$PYTHONPATH}"
+
+MODEL_TAG="${MODEL_TAG:?}"
+DATASET="${DATASET:?}"
+GPUS="${GPUS:?}"
+TP="${TP:-1}"
+SEED="${SEED:-42}"
+
+case "$MODEL_TAG" in
+  nemotron_8b)
+    MODEL=/mnt/d/lsj/models/Llama-3.1-Nemotron-Nano-8B-v1
+    CONF=Nemotron.conf
+    ;;
+  r1_14b)
+    # 单卡放不下 max_model_len=38000 的 KV（与 puma_offline 一致用 TP=2）
+    MODEL=/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-14B
+    CONF=DS-14B.conf
+    TP="${TP:-2}"
+    ;;
+  r1_32b)
+    MODEL=/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-32B
+    CONF=DS-32B.conf
+    TP="${TP:-2}"
+    ;;
+  qwen3_30b_a3b)
+    MODEL=/mnt/d/lsj/models/Qwen3-30B-A3B-Thinking-2507
+    CONF=Q30B-T.conf
+    TP="${TP:-2}"
+    ;;
+  qwq_32b)
+    MODEL=/mnt/d/lsj/models/QwQ-32B
+    CONF=DS-32B.conf
+    TP="${TP:-2}"
+    ;;
+  qwen3_32b)
+    MODEL=/mnt/d/lsj/models/Qwen3-32B
+    CONF=DS-32B.conf
+    TP="${TP:-2}"
+    ;;
+  r1_7b)
+    MODEL=/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-7B
+    CONF=DS-7B.conf
+    ;;
+  qwen3_4b)
+    MODEL=/mnt/d/lsj/models/Qwen3-4B
+    CONF=DS-7B.conf
+    ;;
+  qwen3_8b)
+    MODEL=/mnt/d/lsj/models/Qwen3-8B
+    CONF=DS-7B.conf
+    ;;
+  *)
+    echo "unknown MODEL_TAG=$MODEL_TAG" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$SEED" != "42" ]]; then
+  PUMA_DIR="${PUMA_DIR:-$AE/results/baselines/puma/puma_offline_${MODEL_TAG}_s${SEED}/$DATASET}"
+else
+  PUMA_DIR="${PUMA_DIR:-$AE/results/baselines/puma/puma_offline_${MODEL_TAG}/$DATASET}"
+fi
+if [[ "$MODEL_TAG" == r1_7b && "$DATASET" == math-500 && "$SEED" == "42" ]]; then
+  PUMA_DIR="${PUMA_DIR_OVERRIDE:-$AE/results/baselines/official/math500_official/puma_ds7b}"
+fi
+# AIME / 非 42 的 seed 走 seed_*/，避免盖掉 seed42 平铺
+if [[ "${SEED_LAYOUT:-}" == "1" || "$SEED" != "42" || "$DATASET" == "aime24" || "$DATASET" == "aime25" || "$DATASET" == "aime26" || "$DATASET" == "brumo25" || "$DATASET" == "hmmt25" || "$DATASET" == "amc23" || "$DATASET" == "gsm8k" ]]; then
+  OUT="${OUT:-$AE/results/upstream/dense_trials/dense_G_${MODEL_TAG}/$DATASET/seed_${SEED}/dense_puma}"
+  G_OUT="${G_OUT:-$AE/results/upstream/dense_trials/dense_G_${MODEL_TAG}/$DATASET/seed_${SEED}/per_sample.json}"
+else
+  OUT="${OUT:-$AE/results/upstream/dense_trials/dense_G_${MODEL_TAG}/$DATASET/dense_puma}"
+  G_OUT="${G_OUT:-$AE/results/upstream/dense_trials/dense_G_${MODEL_TAG}/$DATASET/per_sample.json}"
+fi
+
+IFS=',' read -r -a GPU_ARR <<< "$GPUS"
+N_GPU=${#GPU_ARR[@]}
+if (( N_GPU % TP != 0 )); then
+  echo "GPUS length ($N_GPU) must be divisible by TP=$TP" >&2
+  exit 1
+fi
+N=$((N_GPU / TP))
+
+FILTERED="$PUMA_DIR/filtered_steps.json"
+ANSWERS="$PUMA_DIR/answers.json"
+
+mkdir -p "$OUT"
+RUN_FINISHED=0
+write_status() {
+  local state="$1" message="${2:-}"
+  "$AE_PY" - "$OUT/status.json" "$state" "$message" <<'PY'
+import sys
+from plws.artifacts import atomic_write_json, utc_now
+atomic_write_json(sys.argv[1], {
+    "schema_version": 1,
+    "state": sys.argv[2],
+    "message": sys.argv[3] or None,
+    "updated_at": utc_now(),
+})
+PY
+}
+on_exit() {
+  local code=$?
+  if [[ "$RUN_FINISHED" != "1" ]]; then
+    write_status failed "run_dense_trials_model.sh exited with code $code" || true
+  fi
+}
+trap on_exit EXIT
+"$AE_PY" - "$OUT/manifest.json" "$MODEL_TAG" "$MODEL" "$DATASET" "$SEED" "$GPUS" "$TP" "$PUMA_DIR" "$G_OUT" <<'PY'
+import sys
+from plws.artifacts import atomic_write_json, utc_now
+atomic_write_json(sys.argv[1], {
+    "schema_version": 1,
+    "method": "dense_trials",
+    "experiment": "dense_trials",
+    "model_tag": sys.argv[2],
+    "model": sys.argv[3],
+    "dataset": sys.argv[4],
+    "seed": int(sys.argv[5]),
+    "gpus": sys.argv[6],
+    "tensor_parallel_size": int(sys.argv[7]),
+    "puma_dir": sys.argv[8],
+    "g_output": sys.argv[9],
+    "created_at": utc_now(),
+})
+PY
+write_status running
+
+[[ -f "$FILTERED" && -f "$ANSWERS" ]] || { echo "missing $PUMA_DIR"; exit 1; }
+
+if [[ -f "$OUT/trial_answers.json" && -f "$G_OUT" ]]; then
+  write_status succeeded "existing complete output reused"
+  RUN_FINISHED=1
+  echo "[dense-model] skip complete $MODEL_TAG $DATASET seed=$SEED"
+  exit 0
+fi
+if [[ "${DENSE_GPU_ONLY:-}" == "1" && -f "$OUT/trial_answers.json" ]]; then
+  write_status succeeded "existing GPU output reused"
+  RUN_FINISHED=1
+  echo "[dense-model] GPU phase already $OUT/trial_answers.json"
+  exit 0
+fi
+
+mkdir -p "$OUT/shards"
+ANSWERS_TMP="$OUT/.answers.json.tmp.$$"
+cp -f "$ANSWERS" "$ANSWERS_TMP"
+mv -f "$ANSWERS_TMP" "$OUT/answers.json"
+META_TMP="$OUT/.meta.txt.tmp.$$"
+printf '%s\n' \
+  "arm=dense_puma model_tag=$MODEL_TAG model=$MODEL dataset=$DATASET" \
+  "gpus=$GPUS tp=$TP n_shards=$N every_step=1" \
+  > "$META_TMP"
+mv -f "$META_TMP" "$OUT/meta.txt"
+
+export VLLM_LENS_DISABLE=1
+export LD_LIBRARY_PATH="$(
+python3 - <<'PY'
+from pathlib import Path
+root = Path('/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm')
+print(':'.join(sorted({str(p) for p in (root/'.venv'/'lib').glob('**/nvidia/*/lib') if p.is_dir()})))
+PY
+):${LD_LIBRARY_PATH:-}"
+
+"$AE_PY" - <<PY
+import json
+from pathlib import Path
+from plws.artifacts import atomic_write_json
+rows = json.loads(Path("$FILTERED").read_text())
+n = $N
+out = Path("$OUT/shards")
+for i in range(n):
+    payload = []
+    for j, r in enumerate(rows):
+        if j % n != i:
+            continue
+        rr = dict(r)
+        rr["_abs_question_idx"] = j + 1
+        payload.append(rr)
+    atomic_write_json(out / f"filtered_steps_shard{i}.json", payload)
+    print(f"shard{i}: {len(payload)} questions", flush=True)
+PY
+
+cd "$PUMA_ROOT"
+# shellcheck source=/dev/null
+if [[ -f "$PUMA_DIR/_local.conf" ]]; then
+  source "$PUMA_DIR/_local.conf"
+elif [[ -f "$PUMA_DIR/_${CONF%.conf}.local.conf" ]]; then
+  source "$PUMA_DIR/_${CONF%.conf}.local.conf"
+else
+  source "configs/$CONF"
+fi
+
+pids=()
+for i in $(seq 0 $((N - 1))); do
+  shard_q="$OUT/shards/filtered_steps_shard${i}.json"
+  shard_t="$OUT/shards/trial_answers_shard${i}.json"
+  logf="$OUT/shards/shard${i}.log"
+  if [[ -f "$shard_t" ]]; then
+    echo "[dense-model] skip existing $shard_t"
+    continue
+  fi
+  start=$((i * TP))
+  pair=()
+  for k in $(seq 0 $((TP - 1))); do
+    pair+=("${GPU_ARR[$((start + k))]}")
+  done
+  gpu_str=$(IFS=,; echo "${pair[*]}")
+  echo "[dense-model] GPUS=$gpu_str shard=$i TP=$TP → $shard_t"
+  (
+    export CUDA_VISIBLE_DEVICES="$gpu_str"
+    "$PY" puma/gen_trial_answers.py \
+      --questions-file "$shard_q" \
+      --output-file "$shard_t" \
+      --model "$MODEL" \
+      --max-tokens "${MAX_TRIAL_TOKENS:-30}" \
+      --temperature "${TEMPERATURE:-0.6}" \
+      --top_p "${TOP_P:-0.95}" \
+      --tensor-parallel-size "$TP" \
+      --dataset "$DATASET" \
+      --trial-decoding "${TRIAL_DECODING:-sampling}" \
+      --confidence-mode "${CONFIDENCE_MODE:-token_in_boxed}" \
+      --confidence-aggregation geometric \
+      --prompt-version "${PROMPT_VERSION:-default}" \
+      --seed "${SEED:-42}" \
+      2>&1 | tee "$logf"
+  ) &
+  pids+=($!)
+done
+
+ec=0
+for pid in "${pids[@]:-}"; do
+  if ! wait "$pid"; then ec=1; fi
+done
+[[ $ec -eq 0 ]] || { echo "shard failed"; exit 1; }
+
+export OUT N
+"$AE_PY" - <<'PY'
+import json
+import os
+from pathlib import Path
+from plws.artifacts import atomic_write_json
+
+out = Path(os.environ["OUT"])
+n = int(os.environ["N"])
+merged = []
+for i in range(n):
+    fq = out / "shards" / f"filtered_steps_shard{i}.json"
+    ft = out / "shards" / f"trial_answers_shard{i}.json"
+    qs = json.loads(fq.read_text())
+    local_to_abs = {j + 1: int(q["_abs_question_idx"]) for j, q in enumerate(qs)}
+    trials = json.loads(ft.read_text())
+    for e in trials:
+        loc = int(e["question_idx"])
+        e["question_idx"] = local_to_abs[loc]
+        merged.append(e)
+merged.sort(key=lambda e: (int(e["question_idx"]), int(e["stopped_len"])))
+path = out / "trial_answers.json"
+atomic_write_json(path, merged)
+print(f"merged {len(merged)} trials → {path}", flush=True)
+PY
+
+if [[ "${DENSE_GPU_ONLY:-}" == "1" ]]; then
+  write_status succeeded "GPU phase complete"
+  RUN_FINISHED=1
+  echo "[dense-model] GPU phase done $OUT/trial_answers.json"
+  exit 0
+fi
+
+mkdir -p "$(dirname "$G_OUT")"
+"$AE_PY" "$AE/scripts/compute_dense_G.py" \
+  --dataset "$DATASET" \
+  --dense-root "$OUT" \
+  --out "$G_OUT" \
+  --workers 8
+
+write_status succeeded
+RUN_FINISHED=1
+echo "[dense-model] DONE $MODEL_TAG $DATASET $(date -Is)"

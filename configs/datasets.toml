@@ -1,0 +1,26 @@
+schema_version = 1
+
+[datasets.math_500]
+slug = "math-500"
+expected_size = 500
+primary = false
+
+[datasets.olympiadbench]
+slug = "olympiadbench"
+expected_size = 675
+primary = true
+
+[datasets.gpqa_diamond]
+slug = "gpqa-diamond"
+expected_size = 198
+primary = true
+
+[datasets.aime24]
+slug = "aime24"
+expected_size = 30
+primary = true
+
+[datasets.aime25]
+slug = "aime25"
+expected_size = 30
+primary = true
