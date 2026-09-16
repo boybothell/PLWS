@@ -798,12 +798,14 @@ def cells_needing_cpu_export(
     paths: PLWSPaths,
     models: Iterable[str],
     datasets: Iterable[str] | None = None,
+    seeds: Iterable[int] | None = None,
 ) -> list[tuple[str, str, int]]:
     chosen = tuple(datasets) if datasets is not None else DATASETS
+    chosen_seeds = tuple(seeds) if seeds is not None else SEEDS
     found: list[tuple[str, str, int]] = []
     for model in models:
         for dataset in chosen:
-            for seed in SEEDS:
+            for seed in chosen_seeds:
                 if needs_cpu_export(paths, model, dataset, seed):
                     found.append((model, dataset, seed))
     return found
