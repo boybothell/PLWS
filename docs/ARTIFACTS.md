@@ -42,3 +42,14 @@ results/baselines/deer/puma_fullcot_32k_v2/<model>/<dataset>/seed_<seed>/
 
 同步应保留目录层级，并在租卡机运行清单脚本重新扫描。不要把 191 GB 本机
 产物提交到 Git，也不要同步 `results/archive/`。
+
+四个大模型的本机已有产物打在 `transfer/large_model_rental_artifacts_20260916.tar.gz`：
+Full-CoT、PUMA、dense、PLWS jobs/shard；不含 archive、不含小模型、不含 DEER（本机没有）。
+在 `PLWS_ROOT` 解包后运行：
+
+```bash
+"$PLWS_PY" scripts/report_large_model_rental_inventory.py \
+  --expect-transfer manifests/large_model_transfer_20260916.json
+```
+
+验证 Full-CoT/PUMA/dense/PLWS 至少为 94/85/87/79 格后再开队列；已齐格会自动跳过。

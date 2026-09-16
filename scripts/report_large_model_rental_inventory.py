@@ -20,6 +20,7 @@ from plws.contest import (  # noqa: E402
     sample_matches_protocol,
 )
 from plws.matrix import (  # noqa: E402
+    dense_complete,
     deer_complete,
     job_rows,
     jobs_present,
@@ -124,6 +125,7 @@ def collect(paths: PLWSPaths) -> list[dict[str, Any]]:
                         "host": host,
                         "host_count": host_count,
                         "puma": puma_complete(paths, model, dataset, seed),
+                        "dense": dense_complete(paths, model, dataset, seed),
                         "plws": plws,
                         "plws_reason": plws_reason,
                         "plws_scored": scored,
@@ -196,11 +198,13 @@ def render(rows: list[dict[str, Any]], generated_at: str) -> str:
         model_rows = [row for row in rows if row["model"] == model]
         host_missing = sum(row["host"] != "ready" for row in model_rows)
         puma_missing = sum(not row["puma"] for row in model_rows)
+        dense_missing = sum(not row["dense"] for row in model_rows)
         plws_missing = sum(not row["plws"] for row in model_rows)
         deer_missing = sum(not row["deer"] for row in model_rows)
         lines.append(
             f"- {model_name}：Full-CoT 宿主未齐 {host_missing}/45；"
-            f"PUMA 缺 {puma_missing}/45；PLWS 缺 {plws_missing}/45；"
+            f"PUMA 缺 {puma_missing}/45；dense 缺 {dense_missing}/45；"
+            f"PLWS 缺 {plws_missing}/45；"
             f"DEER 缺 {deer_missing}/45。"
         )
 
@@ -267,6 +271,11 @@ def main() -> int:
         type=Path,
         default=ROOT / "manifests" / "large_model_rental_inventory.json",
     )
+    parser.add_argument(
+        "--expect-transfer",
+        type=Path,
+        help="Verify that an extracted transfer contains every recorded reusable artifact.",
+    )
     args = parser.parse_args()
     paths = PLWSPaths(ROOT)
     generated_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -288,6 +297,44 @@ def main() -> int:
     args.output.write_text(render(rows, generated_at), encoding="utf-8")
     print(args.output)
     print(args.json_output)
+    if args.expect_transfer is not None:
+        expected = json.loads(args.expect_transfer.read_text(encoding="utf-8"))
+        indexed = {
+            (row["model"], row["dataset"], int(row["seed"])): row for row in rows
+        }
+        errors: list[str] = []
+        checks = {
+            "host_ready": lambda row: row["host"] == "ready",
+            "puma_complete": lambda row: bool(row["puma"]),
+            "dense_complete": lambda row: bool(row["dense"]),
+            "plws_complete": lambda row: bool(row["plws"]),
+        }
+        for name, check in checks.items():
+            for cell in expected["required"][name]:
+                key = (cell["model"], cell["dataset"], int(cell["seed"]))
+                row = indexed.get(key)
+                if row is None or not check(row):
+                    errors.append(f"{name} missing: {key}")
+        for cell in expected["required"]["plws_partial"]:
+            key = (cell["model"], cell["dataset"], int(cell["seed"]))
+            row = indexed.get(key)
+            if row is None:
+                errors.append(f"plws_partial missing cell: {key}")
+                continue
+            if row["plws_jobs"] != int(cell["jobs"]):
+                errors.append(
+                    f"plws_partial jobs changed: {key} "
+                    f"{row['plws_jobs']} != {cell['jobs']}"
+                )
+            if row["plws_scored"] < int(cell["min_scored"]):
+                errors.append(
+                    f"plws_partial progress lost: {key} "
+                    f"{row['plws_scored']} < {cell['min_scored']}"
+                )
+        if errors:
+            print("\n".join(f"[transfer-error] {error}" for error in errors), file=sys.stderr)
+            return 2
+        print(f"[ok] transfer baseline verified: {args.expect_transfer}")
     return 0
 
 

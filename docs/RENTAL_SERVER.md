@@ -44,15 +44,33 @@ export PLWS_PY=/path/to/vllm-env/bin/python
 
 ## 2. 同步断点
 
-Git 不包含 `samples/` 和 `results/`。如需续跑本机部分 cell，按
-[`ARTIFACTS.md`](ARTIFACTS.md) 的最小同步集，用 rsync 或对象存储单独同步。
-不同步也能从零运行，但不会继承已完成的 Full-CoT、dense 或 PLWS shard。
+Git 不包含 `samples/` 和 `results/`。先把
+`large_model_rental_artifacts_20260916.tar.gz` 放到服务器；它包含四个大模型
+本机已有的 Full-CoT、PUMA、dense、PLWS jobs 和 shard。
 
-同步后重扫：
+先校验、解包，再按规范产物重扫：
 
 ```bash
-"$PLWS_PY" scripts/report_large_model_rental_inventory.py
+echo \
+  "e7d96190fd6c26f8719420e8bb7dd8f1c7477bfdfde0a1c93743b449de89a5ca  large_model_rental_artifacts_20260916.tar.gz" \
+  | sha256sum -c -
+tar -xzf large_model_rental_artifacts_20260916.tar.gz
+
+"$PLWS_PY" scripts/report_large_model_rental_inventory.py \
+  --expect-transfer manifests/large_model_transfer_20260916.json
 ```
+
+校验通过时至少应识别出：Full-CoT 94/180、PUMA 85/180、dense 87/180、
+PLWS 79/180。低于任一项说明包未完整解到 `PLWS_ROOT`，此时禁止启动 GPU
+任务。高于这些数目表示服务器已有新增进度，可以继续使用。
+
+可直接续跑的 PLWS 是 R1-32B OlympiadBench s0（496/560）和 MATH-500
+s1（40/272）。另有七格 Qwen3-30B jobs 已齐但尚未计分：MATH s42/s0、
+OlympiadBench s42、GPQA s42/s0/s1/s123。队列会从这些 shard/jobs 接着跑，
+不会重做已完成 cell。
+
+包内附带的缺格快照生成较早；解包后必须执行上面的重扫命令，以服务器实际产物
+覆盖它。不要按旧 `status.json` 或压缩包内旧 Markdown 手工建任务。
 
 ## 3. 预检
 
@@ -111,6 +129,8 @@ tmux ls
 该队列按规范产物重扫、动态领卡并串行冷加载。`PLWS_LARGE_TP=1` 只适用于实际
 能容纳 38K host 的 80 GB 卡；否则改为 2，并保证 GPU 池能分成双卡 lane。
 DEER 使用上一节的统一单格入口另建 tmux 池，避免和 PUMA/PLWS 同时冷加载。
+队列启动时会逐格调用 `fill_task_complete`：包内已齐的 PUMA/PLWS 自动记为
+succeeded，不进入 GPU pending；半截 shard 只补缺少的 uid。
 
 停止时先向对应 tmux 会话发送 `Ctrl-C`，不要直接杀 vLLM worker。Full-CoT 和
 DEER 整批通常没有题级 checkpoint；PLWS 以完整 `shard_*.jsonl` 为断点。

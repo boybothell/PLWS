@@ -1,0 +1,1808 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-16T13:53:04+08:00",
+  "protocol_id": "puma-fullcot-32k-v2",
+  "package": "large_model_rental_artifacts_20260916.tar.gz",
+  "package_size_bytes": 7733859337,
+  "sha256": "e7d96190fd6c26f8719420e8bb7dd8f1c7477bfdfde0a1c93743b449de89a5ca",
+  "required": {
+    "host_ready": [
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "olympiadbench",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "olympiadbench",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "olympiadbench",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "olympiadbench",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "olympiadbench",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "olympiadbench",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "qwq_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwq_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      }
+    ],
+    "puma_complete": [
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "olympiadbench",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "olympiadbench",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "olympiadbench",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "qwq_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwq_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      }
+    ],
+    "dense_complete": [
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "olympiadbench",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "olympiadbench",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "olympiadbench",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "qwq_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwq_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      }
+    ],
+    "plws_complete": [
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime24",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "aime26",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "amc23",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "olympiadbench",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "gpqa-diamond",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime24",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "aime26",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 42
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 1
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 123
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "amc23",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "aime24",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "brumo25",
+        "seed": 7
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 42
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 0
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 1
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 123
+      },
+      {
+        "model": "qwen3_32b",
+        "dataset": "hmmt25",
+        "seed": 7
+      },
+      {
+        "model": "qwq_32b",
+        "dataset": "brumo25",
+        "seed": 0
+      },
+      {
+        "model": "qwq_32b",
+        "dataset": "brumo25",
+        "seed": 1
+      }
+    ],
+    "plws_partial": [
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 42,
+        "jobs": 328,
+        "min_scored": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "math-500",
+        "seed": 0,
+        "jobs": 349,
+        "min_scored": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "olympiadbench",
+        "seed": 42,
+        "jobs": 634,
+        "min_scored": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 42,
+        "jobs": 183,
+        "min_scored": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 0,
+        "jobs": 187,
+        "min_scored": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 1,
+        "jobs": 185,
+        "min_scored": 0
+      },
+      {
+        "model": "qwen3_30b_a3b",
+        "dataset": "gpqa-diamond",
+        "seed": 123,
+        "jobs": 184,
+        "min_scored": 0
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "math-500",
+        "seed": 1,
+        "jobs": 272,
+        "min_scored": 40
+      },
+      {
+        "model": "r1_32b",
+        "dataset": "olympiadbench",
+        "seed": 0,
+        "jobs": 560,
+        "min_scored": 496
+      }
+    ]
+  }
+}

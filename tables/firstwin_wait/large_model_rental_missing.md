@@ -1,6 +1,6 @@
 # 四个大模型租卡缺格清单
 
-机器产物快照：2026-09-16T10:41:43+08:00
+机器产物快照：2026-09-16T13:53:09+08:00
 
 ## 范围与口径
 
@@ -12,10 +12,10 @@
 
 ## 缺格总览
 
-- Qwen3-30B-A3B：Full-CoT 宿主未齐 3/45；PUMA 缺 10/45；PLWS 缺 15/45；DEER 缺 45/45。
-- R1-Distill-Qwen-32B：Full-CoT 宿主未齐 7/45；PUMA 缺 8/45；PLWS 缺 9/45；DEER 缺 45/45。
-- Qwen3-32B：Full-CoT 宿主未齐 33/45；PUMA 缺 34/45；PLWS 缺 34/45；DEER 缺 45/45。
-- QwQ-32B：Full-CoT 宿主未齐 43/45；PUMA 缺 43/45；PLWS 缺 43/45；DEER 缺 45/45。
+- Qwen3-30B-A3B：Full-CoT 宿主未齐 3/45；PUMA 缺 10/45；dense 缺 8/45；PLWS 缺 15/45；DEER 缺 45/45。
+- R1-Distill-Qwen-32B：Full-CoT 宿主未齐 7/45；PUMA 缺 8/45；dense 缺 8/45；PLWS 缺 9/45；DEER 缺 45/45。
+- Qwen3-32B：Full-CoT 宿主未齐 33/45；PUMA 缺 34/45；dense 缺 34/45；PLWS 缺 34/45；DEER 缺 45/45。
+- QwQ-32B：Full-CoT 宿主未齐 43/45；PUMA 缺 43/45；dense 缺 43/45；PLWS 缺 43/45；DEER 缺 45/45。
 
 ## Qwen3-30B-A3B
 

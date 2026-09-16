@@ -45,7 +45,7 @@ from plws.matrix import (  # noqa: E402
 )
 from plws.paths import PLWSPaths  # noqa: E402
 
-PY = "/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python"
+PY = os.environ.get("PLWS_PY", sys.executable)
 RUN_ROOT = Path(
     os.environ.get("CONTEST_FILL_RUN_ROOT", ROOT / "results" / "runs" / "contest_fill")
 )

@@ -18,6 +18,7 @@ htmlcov/
 # Machine products and local inputs
 results/
 samples/
+transfer/
 logs/
 figures/
 *.log
