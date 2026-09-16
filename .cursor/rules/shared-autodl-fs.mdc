@@ -1,0 +1,43 @@
+---
+description: 格子产物可共用盘；队列看板必须在系统盘，每台机各自一份
+alwaysApply: true
+---
+
+# 共享盘与多机
+
+`samples`、`results` 链到同一份 autodl-fs。`git pull` 不改它们。
+按模型分机时，格子产物路径带 model，一般不会互相覆盖。
+
+## 可以共用 autodl-fs
+
+- Full-CoT / PUMA / dense / jobs / 窗后压分数。
+- `autodl-fs/models/`、评测 `data/`、已齐历史格。只读即可。
+
+## 队列看板：系统盘，每台一份
+
+`status.json` 是本机 fill queue 的快照，不是实验结果。
+禁止写到 `results/runs/contest_fill/`（共享盘，会被对面整文件覆盖）。
+
+本机固定：
+
+```bash
+export CONTEST_FILL_RUN_ROOT=$PLWS_ROOT/tmp/contest_fill
+```
+
+`tmp/` 在系统盘且已 gitignore。每台机器自己的 `/root/plws/tmp/contest_fill`，
+互不可见。对面 QwQ 同样用它自己系统盘上的 `tmp/contest_fill`。
+
+## 其余风险
+
+- 看共享旧 `results/runs/contest_fill/status.json` 以为空闲，再起第二条队列。
+- 队列没写死 `--models`，会去补对面模型的缺格。
+- 两台同时跑同一 `(model, dataset, seed)` 才毁格子。
+- 盘点脚本会盖共享 `tables/`、`manifests/`，不毁格子。
+
+## 必须先做
+
+- 谁在跑只看本机 `pgrep` / `nvidia-smi` / tmux，不看共享盘 `status.json`。
+- 本机已有 fill 占卡时，禁止再起一条 fill queue。
+- 对面的半截 sample / PUMA 留给对面。
+- 已在跑的 `q30-fill` 不要为了迁看板而中途重启；这一格结束后用新
+  `CONTEST_FILL_RUN_ROOT` 再拉。
