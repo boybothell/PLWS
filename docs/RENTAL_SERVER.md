@@ -144,6 +144,11 @@ tmux ls
 - `deer`：只跑统一 host 的 DEER。
 - `puma,plws,deer`：顺序跑完整 cell。
 
+前置内部顺序是 Full-CoT → PUMA → dense → firstwin jobs。dense 会直接复用
+PUMA `trial_answers.json` 中已经生成的切点，只补 PUMA embedding filter 跳过的
+步骤，不再对重叠切点做第二次 GPU 试答。合并后必须逐步覆盖完整 Full-CoT
+轨迹；复用来源和步数写在 dense shard 下的计划与结果 JSON 中。
+
 一张 80 GB 卡能否容纳 38K 上下文必须以 smoke/预检后的实际加载为准。放不下时
 使用 `GPU=0,1 PLWS_TP=2`，不能缩短 32K host 预算。
 

@@ -20,6 +20,7 @@ run_contest_prereq_cell.sh
  ├── run_puma_aligned_sample.sh
  ├── run_puma_official.sh
  ├── run_dense_trials_model.sh
+ │    └── 复用 PUMA 已生成的试答，只补 embedding-filter 跳过的步骤
  └── detach_export_leftover_jobs.sh
 run_contest_plws_cell.sh
  └── score_leftover_suppress.py
@@ -27,6 +28,12 @@ run_deer_official.sh
 ```
 
 这些原子脚本是正式实现，不要另复制一套参数。
+
+`run_dense_trials_model.sh` 的 dense 轨迹仍覆盖 Full-CoT 的每个推理步骤，但
+不再重跑 PUMA 已生成的重叠切点。它冻结
+`puma_trial_reuse_plan.json`，复用 PUMA 非 `skipped` 行，只对缺步调用
+`gen_trial_answers.py`，最后按 `(question_idx, stopped_len)` 合并并严格核验完整
+覆盖。旧版已落盘的 dense shard 优先保留，可从中断处升级续跑。
 
 ## 其他脚本
 

@@ -58,6 +58,7 @@ N=$((N_GPU / TP))
 
 FILTERED="$PUMA_DIR/filtered_steps.json"
 ANSWERS="$PUMA_DIR/answers.json"
+PUMA_TRIALS="$PUMA_DIR/trial_answers.json"
 
 mkdir -p "$OUT"
 RUN_FINISHED=0
@@ -81,7 +82,7 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
-"$AE_PY" - "$OUT/manifest.json" "$MODEL_TAG" "$MODEL" "$DATASET" "$SEED" "$GPUS" "$TP" "$PUMA_DIR" "$G_OUT" <<'PY'
+"$AE_PY" - "$OUT/manifest.json" "$MODEL_TAG" "$MODEL" "$DATASET" "$SEED" "$GPUS" "$TP" "$PUMA_DIR" "$G_OUT" "$PUMA_TRIALS" <<'PY'
 import sys
 from plws.artifacts import atomic_write_json, utc_now
 atomic_write_json(sys.argv[1], {
@@ -96,12 +97,17 @@ atomic_write_json(sys.argv[1], {
     "tensor_parallel_size": int(sys.argv[7]),
     "puma_dir": sys.argv[8],
     "g_output": sys.argv[9],
+    "trial_reuse_mode": "reuse-puma-generated-trials-and-fill-missing-v1",
+    "puma_trial_answers": sys.argv[10],
     "created_at": utc_now(),
 })
 PY
 write_status running
 
-[[ -f "$FILTERED" && -f "$ANSWERS" ]] || { echo "missing $PUMA_DIR"; exit 1; }
+[[ -f "$FILTERED" && -f "$ANSWERS" && -f "$PUMA_TRIALS" ]] || {
+  echo "missing PUMA prerequisite under $PUMA_DIR" >&2
+  exit 1
+}
 
 if [[ -f "$OUT/trial_answers.json" && -f "$G_OUT" ]]; then
   write_status succeeded "existing complete output reused"
@@ -133,24 +139,11 @@ export VLLM_LENS_DISABLE=1
 export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
 plws_export_cuda_runtime
 
-"$AE_PY" - <<PY
-import json
-from pathlib import Path
-from plws.artifacts import atomic_write_json
-rows = json.loads(Path("$FILTERED").read_text())
-n = $N
-out = Path("$OUT/shards")
-for i in range(n):
-    payload = []
-    for j, r in enumerate(rows):
-        if j % n != i:
-            continue
-        rr = dict(r)
-        rr["_abs_question_idx"] = j + 1
-        payload.append(rr)
-    atomic_write_json(out / f"filtered_steps_shard{i}.json", payload)
-    print(f"shard{i}: {len(payload)} questions", flush=True)
-PY
+"$AE_PY" -m plws.dense_reuse prepare \
+  --filtered-steps "$FILTERED" \
+  --puma-trials "$PUMA_TRIALS" \
+  --shards-dir "$OUT/shards" \
+  --num-shards "$N"
 
 cd "$PUMA_ROOT"
 # shellcheck source=/dev/null
@@ -162,11 +155,20 @@ else
   source "configs/$CONF"
 fi
 
+trial_extra_args=()
+if [[ -n "${GPQA_SOFTMAX_TEMPERATURE:-}" ]]; then
+  trial_extra_args+=(--gpqa-softmax-temperature "$GPQA_SOFTMAX_TEMPERATURE")
+fi
+
 pids=()
 for i in $(seq 0 $((N - 1))); do
-  shard_q="$OUT/shards/filtered_steps_shard${i}.json"
-  shard_t="$OUT/shards/trial_answers_shard${i}.json"
-  logf="$OUT/shards/shard${i}.log"
+  shard_q="$OUT/shards/missing_steps_shard${i}.json"
+  shard_t="$OUT/shards/trial_answers_missing_shard${i}.json"
+  logf="$OUT/shards/missing_shard${i}.log"
+  if [[ ! -f "$shard_q" ]]; then
+    echo "[dense-model] shard$i has no missing PUMA trials"
+    continue
+  fi
   if [[ -f "$shard_t" ]]; then
     echo "[dense-model] skip existing $shard_t"
     continue
@@ -191,9 +193,11 @@ for i in $(seq 0 $((N - 1))); do
       --dataset "$DATASET" \
       --trial-decoding "${TRIAL_DECODING:-sampling}" \
       --confidence-mode "${CONFIDENCE_MODE:-token_in_boxed}" \
-      --confidence-aggregation geometric \
+      --confidence-aggregation "${CONFIDENCE_AGGREGATION:-geometric}" \
       --prompt-version "${PROMPT_VERSION:-default}" \
       --seed "${SEED:-42}" \
+      --respect-embedding-filter \
+      "${trial_extra_args[@]}" \
       2>&1 | tee "$logf"
   ) &
   pids+=($!)
@@ -205,31 +209,12 @@ for pid in "${pids[@]:-}"; do
 done
 [[ $ec -eq 0 ]] || { echo "shard failed"; exit 1; }
 
-export OUT N
-"$AE_PY" - <<'PY'
-import json
-import os
-from pathlib import Path
-from plws.artifacts import atomic_write_json
-
-out = Path(os.environ["OUT"])
-n = int(os.environ["N"])
-merged = []
-for i in range(n):
-    fq = out / "shards" / f"filtered_steps_shard{i}.json"
-    ft = out / "shards" / f"trial_answers_shard{i}.json"
-    qs = json.loads(fq.read_text())
-    local_to_abs = {j + 1: int(q["_abs_question_idx"]) for j, q in enumerate(qs)}
-    trials = json.loads(ft.read_text())
-    for e in trials:
-        loc = int(e["question_idx"])
-        e["question_idx"] = local_to_abs[loc]
-        merged.append(e)
-merged.sort(key=lambda e: (int(e["question_idx"]), int(e["stopped_len"])))
-path = out / "trial_answers.json"
-atomic_write_json(path, merged)
-print(f"merged {len(merged)} trials → {path}", flush=True)
-PY
+"$AE_PY" -m plws.dense_reuse merge \
+  --filtered-steps "$FILTERED" \
+  --puma-trials "$PUMA_TRIALS" \
+  --shards-dir "$OUT/shards" \
+  --num-shards "$N" \
+  --output "$OUT/trial_answers.json"
 
 if [[ "${DENSE_GPU_ONLY:-}" == "1" ]]; then
   write_status succeeded "GPU phase complete"
