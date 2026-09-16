@@ -21,6 +21,7 @@ from plws.contest import (  # noqa: E402
     FILL_DATASETS,
     FILL_MODELS,
     MODELS,
+    SEEDS,
     ContestTask,
     batch_size,
     build_fill_tasks,
@@ -534,6 +535,11 @@ def main() -> int:
         default=",".join(FILL_DATASETS),
         help="Comma-separated PUMA dataset slugs.",
     )
+    parser.add_argument(
+        "--seeds",
+        default=",".join(str(seed) for seed in SEEDS),
+        help="Comma-separated seeds. Official new-run first wave is 42,0,1.",
+    )
     args = parser.parse_args()
     gpus = tuple(item.strip() for item in args.gpus.split(",") if item.strip())
     if args.models.strip():
@@ -550,11 +556,20 @@ def main() -> int:
     )
     if not chosen_datasets:
         raise ValueError("fill queue needs at least one dataset")
+    try:
+        chosen_seeds = tuple(
+            int(item.strip()) for item in args.seeds.split(",") if item.strip()
+        )
+    except ValueError as exc:
+        raise ValueError(f"seeds must be integers: {args.seeds}") from exc
+    if not chosen_seeds:
+        raise ValueError("fill queue needs at least one seed")
     validate(gpus, chosen_models, chosen_datasets)
     tasks = build_fill_tasks(
         PATHS,
         models=chosen_models,
         datasets=chosen_datasets,
+        seeds=chosen_seeds,
     )
 
     if not args.dry_run:
@@ -562,7 +577,7 @@ def main() -> int:
             raise RuntimeError("another contest-fill queue is already running")
         for model in chosen_models:
             for dataset in chosen_datasets:
-                for seed in (42, 0, 1, 123, 7):
+                for seed in chosen_seeds:
                     if ensure_firstwin_jobs(PATHS, model, dataset, seed):
                         event(
                             "ensured_firstwin",

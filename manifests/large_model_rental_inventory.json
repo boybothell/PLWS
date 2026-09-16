@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-16T13:53:09+08:00",
+  "generated_at": "2026-09-16T16:22:50+08:00",
   "protocol_id": "puma-fullcot-32k-v2",
   "models": [
     "qwen3_30b_a3b",
@@ -24,6 +24,28 @@
     1,
     123,
     7
+  ],
+  "current_datasets": [
+    "math-500",
+    "olympiadbench",
+    "gpqa-diamond",
+    "aime25",
+    "hmmt25"
+  ],
+  "current_seeds": [
+    42,
+    0,
+    1
+  ],
+  "later_seeds": [
+    123,
+    7
+  ],
+  "no_new_work_datasets": [
+    "aime24",
+    "aime26",
+    "brumo25",
+    "amc23"
   ],
   "rows": [
     {

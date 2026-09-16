@@ -79,6 +79,17 @@ ALIGN_CONF = {
 DATASETS = ("brumo25", "hmmt25", "aime24", "aime25", "aime26")
 FILL_DATASETS = DATASETS + ("amc23",)
 SEEDS = (42, 0, 1, 123, 7)
+# Official new-run scope. Historical fill still uses FILL_DATASETS / SEEDS.
+OFFICIAL_NEW_DATASETS = (
+    "math-500",
+    "olympiadbench",
+    "gpqa-diamond",
+    "aime25",
+    "hmmt25",
+)
+OFFICIAL_FIRST_SEEDS = (42, 0, 1)
+OFFICIAL_LATER_SEEDS = (123, 7)
+NO_NEW_WORK_DATASETS = ("aime24", "aime26", "brumo25", "amc23")
 PUBLISHED_LEGACY_PLWS = frozenset(
     ("r1_7b", "amc23", seed) for seed in (42, 0, 1, 123)
 )
@@ -950,15 +961,17 @@ def build_fill_tasks(
     *,
     models: Iterable[str] | None = None,
     datasets: Iterable[str] | None = None,
+    seeds: Iterable[int] | None = None,
 ) -> list[ContestTask]:
     chosen = tuple(models) if models is not None else FILL_MODELS
     chosen_ds = tuple(datasets) if datasets is not None else FILL_DATASETS
+    chosen_seeds = tuple(seeds) if seeds is not None else SEEDS
     tasks: list[ContestTask] = []
     for model in chosen:
         if model not in MODELS:
             raise ValueError(f"unknown contest fill model {model}")
         for dataset in chosen_ds:
-            for seed in SEEDS:
+            for seed in chosen_seeds:
                 if fill_needs_prereq(paths, model, dataset, seed):
                     tasks.append(prereq_task(model, dataset, seed))
                 tasks.append(plws_task(model, dataset, seed))

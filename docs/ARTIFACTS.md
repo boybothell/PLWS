@@ -52,4 +52,6 @@ Full-CoT、PUMA、dense、PLWS jobs/shard；不含 archive、不含小模型、�
   --expect-transfer manifests/large_model_transfer_20260916.json
 ```
 
-验证 Full-CoT/PUMA/dense/PLWS 至少为 94/85/87/79 格后再开队列；已齐格会自动跳过。
+验证 Full-CoT/PUMA/dense/PLWS 至少为 94/85/87/79 格后再开队列；这是历史
+4×9×5 传输包完整性，不是现行新跑格子数。已齐格会自动跳过。新队列只领
+MATH / Olympiad / GPQA / AIME25 / HMMT25 的 seed 42/0/1。

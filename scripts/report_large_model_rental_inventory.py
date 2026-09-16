@@ -15,6 +15,10 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from plws.artifacts import load_jsonl  # noqa: E402
 from plws.contest import (  # noqa: E402
+    NO_NEW_WORK_DATASETS,
+    OFFICIAL_FIRST_SEEDS,
+    OFFICIAL_LATER_SEEDS,
+    OFFICIAL_NEW_DATASETS,
     fill_plws_complete,
     sample_answers_path,
     sample_matches_protocol,
@@ -54,6 +58,12 @@ DATASETS = (
     ("amc23", "AMC23", 40),
 )
 SEEDS = (42, 0, 1, 123, 7)
+CURRENT_DATASETS = tuple(
+    item for item in DATASETS if item[0] in OFFICIAL_NEW_DATASETS
+)
+CURRENT_SEEDS = OFFICIAL_FIRST_SEEDS
+CURRENT_CELL_COUNT = len(MODELS) * len(CURRENT_DATASETS) * len(CURRENT_SEEDS)
+HISTORICAL_CELL_COUNT = len(MODELS) * len(DATASETS) * len(SEEDS)
 
 
 def host_state(
@@ -156,15 +166,24 @@ def seed_text(rows: list[dict[str, Any]], method: str) -> str:
     return "、".join(values)
 
 
+def in_current_scope(row: dict[str, Any]) -> bool:
+    return (
+        row["dataset"] in OFFICIAL_NEW_DATASETS
+        and int(row["seed"]) in CURRENT_SEEDS
+    )
+
+
 def method_lines(model_rows: list[dict[str, Any]], method: str) -> list[str]:
-    if method == "deer" and all(not row["deer"] for row in model_rows):
+    scoped = [row for row in model_rows if in_current_scope(row)]
+    per_model = len(CURRENT_DATASETS) * len(CURRENT_SEEDS)
+    if method == "deer" and scoped and all(not row["deer"] for row in scoped):
         return [
-            "- 全部缺：9 个数据集 × 5 seeds，共 45 格；"
-            "seeds 为 42、0、1、123、7。"
+            f"- 现行范围全部缺：5 个数据集 × 3 seeds，共 {per_model} 格；"
+            "seeds 为 42、0、1。"
         ]
     lines: list[str] = []
-    for dataset, dataset_name, _expected in DATASETS:
-        rows = [row for row in model_rows if row["dataset"] == dataset]
+    for dataset, dataset_name, _expected in CURRENT_DATASETS:
+        rows = [row for row in scoped if row["dataset"] == dataset]
         missing = seed_text(rows, method)
         if missing:
             lines.append(f"- {dataset_name}：{missing}")
@@ -181,31 +200,38 @@ def render(rows: list[dict[str, Any]], generated_at: str) -> str:
         "",
         "- 模型：Qwen3-30B-A3B、R1-Distill-Qwen-32B、"
         "Qwen3-32B、QwQ-32B。",
-        "- 数据集：MATH-500、OlympiadBench、GPQA-Diamond、"
-        "AIME24、AIME25、AIME26、BRUMO25、HMMT25、AMC23。",
-        "- seeds：42、0、1、123、7。每种方法总计 4 × 9 × 5 = 180 格。",
+        "- 现行新跑：MATH-500、OlympiadBench、GPQA-Diamond、"
+        "AIME25、HMMT25；第一波 seed 42、0、1。"
+        f"每种方法总计 4 × 5 × 3 = {CURRENT_CELL_COUNT} 格。",
+        "- 第一波齐了再排 seed 123、7。不再新开 AIME24、AIME26、"
+        "BRUMO25、AMC23；已有产物保留，不删、不重跑、不入新队列。",
+        "- 传输包仍按历史 4 × 9 × 5 = "
+        f"{HISTORICAL_CELL_COUNT} 格核验，避免漏解已有前缀。",
         f"- 公平宿主：`{PROTOCOL_ID}`；Full-CoT 主预算 "
         f"{FULLCOT_GENERATION_TOKENS}，answer-fix "
         f"{TRUNCATED_ANSWER_FIX_TOKENS}，prompt 预留 "
         f"{PROMPT_RESERVE_TOKENS}，`max_model_len={MAX_MODEL_LEN}`。",
         "- PUMA、PLWS、DEER 分别检查规范产物；归档、旧协议和半截 "
-        "`answers.json` 不算完成。",
+        "`answers.json` 不算完成。主表分数线先不动。",
         "",
-        "## 缺格总览",
+        "## 缺格总览（现行 5 集 × 3 seed）",
         "",
     ]
+    per_model = len(CURRENT_DATASETS) * len(CURRENT_SEEDS)
     for model, model_name in MODELS:
-        model_rows = [row for row in rows if row["model"] == model]
+        model_rows = [
+            row for row in rows if row["model"] == model and in_current_scope(row)
+        ]
         host_missing = sum(row["host"] != "ready" for row in model_rows)
         puma_missing = sum(not row["puma"] for row in model_rows)
         dense_missing = sum(not row["dense"] for row in model_rows)
         plws_missing = sum(not row["plws"] for row in model_rows)
         deer_missing = sum(not row["deer"] for row in model_rows)
         lines.append(
-            f"- {model_name}：Full-CoT 宿主未齐 {host_missing}/45；"
-            f"PUMA 缺 {puma_missing}/45；dense 缺 {dense_missing}/45；"
-            f"PLWS 缺 {plws_missing}/45；"
-            f"DEER 缺 {deer_missing}/45。"
+            f"- {model_name}：Full-CoT 宿主未齐 {host_missing}/{per_model}；"
+            f"PUMA 缺 {puma_missing}/{per_model}；dense 缺 {dense_missing}/{per_model}；"
+            f"PLWS 缺 {plws_missing}/{per_model}；"
+            f"DEER 缺 {deer_missing}/{per_model}。"
         )
 
     for model, model_name in MODELS:
@@ -228,28 +254,27 @@ def render(rows: list[dict[str, Any]], generated_at: str) -> str:
             "2. A800-80GB 先对每个 checkpoint 做单题 TP=1 预检：真实导入、"
             "`max_model_len=37888`、32K 生成和写盘都通过后才放全量。若某模型"
             "单卡因 KV 余量不足，只把该模型回退 TP=2，不整队统一 TP=2。",
-            "3. 第一批先收可续的 PLWS：R1-32B Olympiad s0 "
-            "496/560、MATH s1 40/272；再收 Qwen3-30B 已有 jobs 的 7 格。"
+            "3. 第一波只领现行五集的 seed 42、0、1。已齐格跳过；"
+            "可续 PLWS 优先 R1-32B Olympiad s0 496/560、MATH s1 40/272，"
+            "再收 Qwen3-30B 已有 jobs 且落在现行范围内的格子。"
             "这些格子不需要重做 Full-CoT。",
             "4. 第二批补缺 Full-CoT/PUMA，并立即产出 dense、第一扇 k=4 "
             "窗口 jobs；同一格 jobs 一齐就进入 PLWS 动态池。",
-            "5. DEER 是独立方法池，四个模型当前 180 格全缺。保留各模型族"
+            "5. DEER 是独立方法池，只排现行 60 格。保留各模型族"
             "自己的 think_ratio、置信聚合和退出机制；probe 成本单独记录。",
             "6. 空闲 GPU 动态领下一格；所有模型冷加载整机串行。完整性看"
             "规范产物与 manifest，不看 wrapper 退出码。",
+            "7. seed 123/7 等第一波齐了再开。AIME24 / AIME26 / BRUMO25 / "
+            "AMC23 不入队。",
             "",
             "## 本机分工",
             "",
             "- 本机不再启动上述四个模型的 TP=2 任务；已有 R1-32B "
-            "Olympiad s0 保留 496/560，MATH s1 保留 40/272。",
-            "- 当前只用空闲的 GPU 3、4 跑单卡模型；GPU 5、6 已被其他用户"
-            "占用，不抢占。",
-            "- 第一优先：14B 主三集 seed 7。先并行续 GPQA 120/178 和 "
-            "MATH 0/414，再补 Olympiad 的 Full-CoT/PUMA/PLWS。",
-            "- 第二优先：1.5B 主三集五 seeds；第三优先：Nemotron、4B、8B "
-            "主三集 seed 7；第四优先：Llama-8B 主三集与 AIME26/AMC23 缺格。",
-            "- 上述 PUMA/PLWS 收齐后，本机单卡继续补小模型 DEER；不把"
-            "租卡上的四个大模型 DEER 混回本机。",
+            "Olympiad s0 保留 496/560，MATH s1 保留 40/272，转租卡续。",
+            "- 已在飞的 14B Olympiad Full-CoT s7 等落盘，不再新开 seed 7。",
+            "- 本机新开只按现行五集、先三个 seed；AIME24 / AIME26 / "
+            "BRUMO25 / AMC23 不再补。",
+            "- 不把租卡上的四个大模型 DEER 混回本机。",
             "",
             "机器可读清单："
             "`manifests/large_model_rental_inventory.json`。",
@@ -286,6 +311,10 @@ def main() -> int:
         "models": [model for model, _name in MODELS],
         "datasets": [dataset for dataset, _name, _expected in DATASETS],
         "seeds": list(SEEDS),
+        "current_datasets": list(OFFICIAL_NEW_DATASETS),
+        "current_seeds": list(CURRENT_SEEDS),
+        "later_seeds": list(OFFICIAL_LATER_SEEDS),
+        "no_new_work_datasets": list(NO_NEW_WORK_DATASETS),
         "rows": rows,
     }
     args.json_output.parent.mkdir(parents=True, exist_ok=True)

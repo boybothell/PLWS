@@ -11,6 +11,10 @@ from plws.contest import (
     FILL_MODELS,
     FOLLOWON_MODELS,
     MODELS,
+    NO_NEW_WORK_DATASETS,
+    OFFICIAL_FIRST_SEEDS,
+    OFFICIAL_LATER_SEEDS,
+    OFFICIAL_NEW_DATASETS,
     QUEUE_MODELS,
     build_fill_tasks,
     contest_blocked_phases,
@@ -92,6 +96,34 @@ class ContestFillTest(unittest.TestCase):
                 "prompt_version": "default",
             },
         )
+
+    def test_official_new_run_scope(self) -> None:
+        self.assertEqual(
+            OFFICIAL_NEW_DATASETS,
+            (
+                "math-500",
+                "olympiadbench",
+                "gpqa-diamond",
+                "aime25",
+                "hmmt25",
+            ),
+        )
+        self.assertEqual(OFFICIAL_FIRST_SEEDS, (42, 0, 1))
+        self.assertEqual(OFFICIAL_LATER_SEEDS, (123, 7))
+        self.assertEqual(
+            NO_NEW_WORK_DATASETS, ("aime24", "aime26", "brumo25", "amc23")
+        )
+        tasks = build_fill_tasks(
+            self.paths,
+            models=("r1_32b",),
+            datasets=OFFICIAL_NEW_DATASETS,
+            seeds=OFFICIAL_FIRST_SEEDS,
+        )
+        seeds = {task.seed for task in tasks}
+        datasets = {task.dataset for task in tasks}
+        self.assertEqual(seeds, {42, 0, 1})
+        self.assertEqual(datasets, set(OFFICIAL_NEW_DATASETS))
+        self.assertNotIn("aime24", datasets)
 
     def test_fill_scope_keeps_old_contest_lane(self) -> None:
         self.assertEqual(DATASETS, ("brumo25", "hmmt25", "aime24", "aime25", "aime26"))
