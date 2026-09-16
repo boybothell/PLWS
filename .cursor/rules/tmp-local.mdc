@@ -7,12 +7,17 @@ alwaysApply: true
 
 - 本机一次性脚本、路径备忘、核对草稿、AutoDL 绝对路径只放 `tmp/`。
   `tmp/` 已被 gitignore，禁止再写进 `scripts/`、`src/`、`docs/`。
+- 只在云服务器需要、本机仓库不该有的东西也只放 `tmp/`：软链安装脚本、
+  租卡路径、本机没有的目录挂接。不要把软链或云端专用文件写进正式树，
+  以免 pull/push 污染本机代码。运行时若必须让 `PLWS_ROOT/samples`、
+  `PLWS_ROOT/results` 指向 autodl-fs，用 `tmp/` 里的脚本创建 **gitignore
+  已忽略** 的软链，不要改正式入口。
 - 当前工作树里的 `PLWS_DATA_ROOT` / `dataset_path` / `.env` 读取是正式租卡
   接线，不是临时脚本，留在原文件。机器路径只写 gitignored 的 `.env` 或 `tmp/`。
 - 不要为租卡新建 `download_*.py`、`reorder_*.py`、`launch_<模型>_<GPU>.sh`。
   数据用 `scripts/bootstrap_puma.sh`（固定 commit + patch）；启动用手册里的
   tmux + 现有 cell/queue。
-- 预检只数条数，不能当顺序依据。不要手工下载同名官方集覆盖
-  `PLWS_DATA_ROOT` 或 `PUMA/data`。
+- 预检按仓库 `data/SHA256SUMS` 锁内容和题序，不能只数条数。不要手工下载
+  同名官方集覆盖 `PUMA/data`。
 - 拿不准是临时还是正式时：先放 `tmp/`。只有会被别的机器复用、且已参数化的
   入口，才升到 `scripts/` 并在 `scripts/README.md` 登记。

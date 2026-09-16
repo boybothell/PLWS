@@ -401,10 +401,20 @@ def main() -> None:
         }
     )
     atomic_write_json(manifest_path, manifest)
+    gpu_mem = float(os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.88"))
+    engine_kwargs: dict[str, Any] = {}
+    if os.environ.get("VLLM_MAX_NUM_SEQS"):
+        engine_kwargs["max_num_seqs"] = int(os.environ["VLLM_MAX_NUM_SEQS"])
+    if os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS"):
+        engine_kwargs["max_num_batched_tokens"] = int(
+            os.environ["VLLM_MAX_NUM_BATCHED_TOKENS"]
+        )
+    extra = " ".join(f"{key}={value}" for key, value in engine_kwargs.items())
     print(
         f"{args.mode} {args.model_tag} tp={tp_size} model={model_path} "
-        f"max_model_len={args.max_context} temperature={temperature} "
-        f"top_p={top_p} top_k={top_k}",
+        f"max_model_len={args.max_context} gpu_memory_utilization={gpu_mem}"
+        f"{(' ' + extra) if extra else ''} "
+        f"temperature={temperature} top_p={top_p} top_k={top_k}",
         flush=True,
     )
     llm = LLM(
@@ -412,8 +422,9 @@ def main() -> None:
         trust_remote_code=True,
         tensor_parallel_size=tp_size,
         max_model_len=args.max_context,
-        gpu_memory_utilization=0.88,
+        gpu_memory_utilization=gpu_mem,
         enable_prefix_caching=True,
+        **engine_kwargs,
     )
     atexit.register(shutdown_llm, llm)
     think_base: dict[str, Any] = {

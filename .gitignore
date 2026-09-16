@@ -16,8 +16,8 @@ htmlcov/
 .vscode/
 
 # Machine products and local inputs
-results/
-samples/
+/results
+/samples
 transfer/
 logs/
 figures/

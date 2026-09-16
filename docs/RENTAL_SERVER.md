@@ -36,7 +36,8 @@ uv pip install --python "$PLWS_PY" -e . --no-deps
 uv pip install --python "$PLWS_PY" -r requirements-dev.txt
 
 # 从固定上游提交创建带 puma-fullcot-32k-v2 补丁的 PUMA，
-# 并把仓库内九份评测 jsonl 原样装进 PUMA/data。不要另下 Hugging Face 覆盖。
+# 并把仓库自带的九份评测 jsonl 原样装进 PUMA/data 后校验 SHA256。
+# clone/pull 后数据已经齐全；不要另下 Hugging Face 或同名官方集覆盖。
 # 新队列只用其中五集；其余四份只服务已有产物续跑/核验。
 bash scripts/bootstrap_puma.sh
 ```
@@ -51,9 +52,11 @@ export PLWS_PY=/path/to/vllm-env/bin/python
 ```
 
 模型目录名见 `configs/models.toml`。模型根目录可以通过
-`PLWS_MODELS_ROOT` 修改，不要求复刻本机绝对路径。评测 jsonl 可通过
-`PLWS_DATA_ROOT` 指向 `{slug}_test.jsonl`。本机绝对路径写进 gitignored 的
-`.env` 或 `tmp/`，不要写进本手册。
+`PLWS_MODELS_ROOT` 修改，不要求复刻本机绝对路径。九份评测 jsonl 的唯一源是
+本仓库 `data/`，`bootstrap_puma.sh` 会将其安装到 `$PUMA_ROOT/data/`；
+正式续跑不要设置 `PLWS_DATA_ROOT`。如确需覆盖该变量，目标文件必须与仓库
+锁定文件逐字节一致。详见 [`data/README.md`](../data/README.md)。
+本机绝对路径写进 gitignored 的 `.env` 或 `tmp/`，不要写进本手册。
 
 ## 2. 同步断点
 
@@ -94,8 +97,10 @@ OlympiadBench s42、GPQA s42/s0/s1/s123。队列会从这些 shard/jobs 接着�
 bash scripts/preflight_rental_server.sh
 ```
 
-它检查四个模型、钉死的九份数据、PUMA 补丁、关键入口和实际 Python import。
-预检失败时不要启动生成。新队列仍然只用现行五集。
+它检查四个模型、PUMA 补丁、关键入口和实际 Python import，并按仓库
+`data/SHA256SUMS` 校验九份锁定数据、`$PUMA_ROOT/data/` 及运行时实际数据路径。
+这会同时锁定内容与题序，不再只检查条数。预检失败时不要启动生成。
+新队列仍然只用现行五集。
 
 ## 4. 运行一个 cell
 
