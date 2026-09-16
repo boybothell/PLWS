@@ -7,7 +7,7 @@
 
 | 用途 | 入口 |
 |---|---|
-| 安装固定 PUMA 补丁 | `bootstrap_puma.sh` |
+| 安装固定 PUMA 补丁和九份评测数据 | `bootstrap_puma.sh` |
 | 环境与资产预检 | `preflight_rental_server.sh` |
 | 单个大模型 cell | `run_large_model_cell.sh` |
 | 多卡 PUMA/PLWS fill | `run_contest_fill_queue.py` |

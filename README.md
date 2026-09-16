@@ -21,6 +21,7 @@ PLWS 是本仓库的主方法：在第一扇连续同答窗后继续推理，并
 
 ## 数据与产物
 
+- `data/`：九份评测 jsonl，题序唯一源。`bootstrap_puma.sh` 会装进 `$PUMA_ROOT/data/`。
 - `samples/`：只读输入。
 - `results/`：唯一机器结果根；规范见 [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md)。
 - `tables/`、`figures/`：本地生成的人读结果，默认不进 Git。

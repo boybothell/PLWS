@@ -28,3 +28,24 @@ else
   echo "ERROR: PUMA worktree is neither clean nor already patched" >&2
   exit 2
 fi
+
+DATA_SRC="$ROOT/data"
+DEST="$PUMA_ROOT/data"
+if [[ ! -f "$DATA_SRC/SHA256SUMS" ]]; then
+  echo "ERROR: missing pinned datasets: $DATA_SRC/SHA256SUMS" >&2
+  exit 2
+fi
+mkdir -p "$DEST"
+while read -r _digest filename; do
+  [[ -n "${filename:-}" ]] || continue
+  if [[ ! -f "$DATA_SRC/$filename" ]]; then
+    echo "ERROR: missing pinned dataset: $DATA_SRC/$filename" >&2
+    exit 2
+  fi
+  cp -f "$DATA_SRC/$filename" "$DEST/$filename"
+done < "$DATA_SRC/SHA256SUMS"
+(
+  cd "$DEST"
+  sha256sum -c "$DATA_SRC/SHA256SUMS"
+)
+echo "[ok] installed pinned datasets into $DEST"

@@ -26,7 +26,8 @@ uv pip install --python "$PLWS_PY" -e . --no-deps
 # 需要在服务器跑测试时再安装：
 uv pip install --python "$PLWS_PY" -r requirements-dev.txt
 
-# 从固定上游提交创建带 puma-fullcot-32k-v2 补丁的 PUMA。
+# 从固定上游提交创建带 puma-fullcot-32k-v2 补丁的 PUMA，
+# 并把仓库内九份评测 jsonl 原样装进 PUMA/data。不要另下 Hugging Face 覆盖。
 bash scripts/bootstrap_puma.sh
 ```
 

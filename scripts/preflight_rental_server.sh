@@ -13,6 +13,7 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 "$PY" - "$ROOT" "$PUMA_ROOT" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 from pathlib import Path
@@ -50,14 +51,35 @@ for path in required_puma:
     if not path.is_file():
         errors.append(f"missing patched PUMA file: {path}")
 
+checksums = {}
+sums = root / "data" / "SHA256SUMS"
+if not sums.is_file():
+    errors.append(f"missing pinned checksums: {sums}")
+else:
+    for line in sums.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        digest, name = line.split()
+        checksums[name] = digest
+
 for slug, expected in datasets.items():
-    path = puma / "data" / f"{slug}_test.jsonl"
+    name = f"{slug}_test.jsonl"
+    path = puma / "data" / name
+    pinned = root / "data" / name
     if not path.is_file():
         errors.append(f"missing dataset: {path}")
         continue
     actual = sum(1 for line in path.open(encoding="utf-8") if line.strip())
     if actual != expected:
         errors.append(f"dataset size mismatch: {path} ({actual} != {expected})")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    expected_digest = checksums.get(name)
+    if expected_digest is None:
+        errors.append(f"dataset not pinned: {name}")
+    elif digest != expected_digest:
+        errors.append(f"dataset hash mismatch: {path}")
+    if pinned.is_file() and path.read_bytes() != pinned.read_bytes():
+        errors.append(f"dataset differs from repo pin: {path}")
 
 for module in ("torch", "transformers", "vllm", "plws.contest"):
     try:
