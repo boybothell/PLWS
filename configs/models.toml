@@ -1,4 +1,5 @@
 schema_version = 1
+# Launchers use PLWS_MODELS_ROOT when set; this is the local fallback.
 models_root = "/mnt/d/lsj/models"
 
 [models.r1_7b]
@@ -28,5 +29,15 @@ family = "qwen3"
 
 [models.qwen3_30b_a3b]
 path = "Qwen3-30B-A3B-Thinking-2507"
+family = "qwen3"
+tensor_parallel_size = 2
+
+[models.qwq_32b]
+path = "QwQ-32B"
+family = "qwq"
+tensor_parallel_size = 2
+
+[models.qwen3_32b]
+path = "Qwen3-32B"
 family = "qwen3"
 tensor_parallel_size = 2

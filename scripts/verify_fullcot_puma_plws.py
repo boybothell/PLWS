@@ -7,23 +7,30 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from plws.matrix import deer_complete, deer_output_dir, job_rows
+from plws.matrix import deer_output_dir, job_rows
 from plws.paths import PLWSPaths
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from report_fullcot_puma_plws import (  # noqa: E402
-    DATASETS,
-    EXTRA_MODELS,
+    OVERALL_EQ_LABEL,
+    OVERALL_NW_LABEL,
     OVERALL_ONLY_DATASETS,
     MODELS,
-    SEEDS,
     boxed_trial_tokens_upto,
+    collect_shown,
+    fmt_cell,
+    overall_method_cells,
     collect_plws_scores,
+    datasets_for,
+    deer_seed_n,
+    deer_seeds_for_cell,
+    four_seed_cell_complete,
     load_json,
     load_trials_by_question,
     puma_delivery_path,
     puma_token,
+    seeds_for_cell,
 )
 
 TABLE = ROOT / "tables" / "firstwin_wait" / "fullcot_puma_plws.md"
@@ -40,14 +47,25 @@ def recount(paths: PLWSPaths) -> dict:
     cells = {}
     issues: list[str] = []
     for model, zh in MODELS:
-        extra_rows = OVERALL_ONLY_DATASETS if model in EXTRA_MODELS else ()
-        for dataset, dszh, expect_n in (*DATASETS, *extra_rows):
+        for dataset, dszh, expect_n in datasets_for(model):
             allow_legacy = (dataset, dszh, expect_n) in OVERALL_ONLY_DATASETS
+            if not four_seed_cell_complete(
+                paths,
+                model,
+                dataset,
+                expect_n,
+                allow_legacy=allow_legacy,
+            ):
+                continue
             full_ok = full_tok = puma_ok = puma_tok = plws_ok = plws_tok = 0
             puma_del = puma_trial = plws_del = plws_trial = 0.0
             n = n_win = n_un = 0
             missing_trial = 0
-            for seed in SEEDS:
+            used_seeds = seeds_for_cell(
+                paths, model, dataset, expect_n, allow_legacy=allow_legacy
+            )
+            want_n = deer_seed_n(expect_n) * len(used_seeds)
+            for seed in used_seeds:
                 official = {
                     int(r["question_idx"]): r
                     for r in load_json(paths.puma_statistics_path(model, dataset, seed))
@@ -111,17 +129,20 @@ def recount(paths: PLWSPaths) -> dict:
                         plws_tok += float(info.get("original_tokens") or 0)
                     else:
                         issues.append(f"missing score {model} {dataset} s{seed} q{qid}")
-            if n != expect_n:
-                issues.append(f"{zh} {dszh} n={n} expected {expect_n}")
+            if n != want_n:
+                issues.append(f"{zh} {dszh} n={n} expected {want_n}")
             deer = None
-            expected = expect_n // 4
-            if not allow_legacy and all(
-                deer_complete(paths, model, dataset, seed, expected=expected)[0]
-                for seed in SEEDS
-            ):
+            deer_seeds = (
+                ()
+                if allow_legacy
+                else deer_seeds_for_cell(
+                    paths, model, dataset, expect_n, used_seeds
+                )
+            )
+            if deer_seeds:
                 d_ok = d_tok = d_del = d_trial = 0.0
                 d_n = 0
-                for seed in SEEDS:
+                for seed in deer_seeds:
                     path = deer_output_dir(paths, model, dataset, seed) / "deer.jsonl"
                     for line in path.read_text().splitlines():
                         if not line.strip():
@@ -145,6 +166,8 @@ def recount(paths: PLWSPaths) -> dict:
                 }
             cells[(zh, dszh)] = {
                 "n": n,
+                "seeds": list(used_seeds),
+                "deer_seeds": list(deer_seeds),
                 "windowed": n_win,
                 "unwindowed": n_un,
                 "missing_trial": missing_trial,
@@ -186,17 +209,26 @@ def main() -> None:
     for model, zh in MODELS:
         accs = defaultdict(list)
         toks = defaultdict(list)
-        extras = OVERALL_ONLY_DATASETS if model in EXTRA_MODELS else ()
-        for dataset, dszh, expect_n in (*DATASETS, *extras):
+        ns = defaultdict(list)
+        for dataset, dszh, expect_n in datasets_for(model):
             hidden = (dataset, dszh, expect_n) in OVERALL_ONLY_DATASETS
+            if (zh, dszh) not in got["cells"]:
+                if (zh, dszh) in by_report:
+                    mismatches.append(f"{zh} {dszh} incomplete but still in table")
+                continue
             cell = got["cells"][(zh, dszh)]
             ref = by_report[(zh, dszh)]
-            if cell["n"] != expect_n or ref["n"] != expect_n:
+            if cell["n"] != ref["n"]:
                 mismatches.append(f"{zh} {dszh} n {cell['n']} vs table {ref['n']}")
+            if cell["seeds"] != ref.get("seeds", cell["seeds"]):
+                mismatches.append(
+                    f"{zh} {dszh} seeds {cell['seeds']} vs table {ref.get('seeds')}"
+                )
             for key in ("full", "puma", "plws"):
                 g, r = cell[key], ref[key]
                 accs[key].append(g["acc"])
                 toks[key].append(g["tok"])
+                ns[key].append(ref["n"])
                 if abs(g["acc"] - r["acc"]) > 0.005:
                     mismatches.append(
                         f"{zh} {dszh} {key} acc {g['acc']:.4f} vs table {r['acc']}"
@@ -206,10 +238,11 @@ def main() -> None:
                         f"{zh} {dszh} {key} tok {g['tok']:.3f} vs table {r['tok']}"
                     )
                 shown = f"{g['acc']:.2f}% / {round(g['tok'])}"
-                if shown not in table and f"{g['acc']:.2f}% / {int(g['tok'])}" not in table:
+                plain = table.replace("**", "")
+                if shown not in plain and f"{g['acc']:.2f}% / {int(g['tok'])}" not in plain:
                     # table uses round()
                     pass
-                if shown not in table:
+                if shown not in plain:
                     mismatches.append(f"{zh} {dszh} {key} md missing {shown}")
                 if key != "full" and g["tok_trial"] < 0:
                     mismatches.append(f"{zh} {dszh} {key} negative trial")
@@ -228,21 +261,25 @@ def main() -> None:
                 if deer_g is None:
                     mismatches.append(f"{zh} {dszh} DEER missing in recount")
                     continue
-                if deer_g["n"] != expect_n:
+                if deer_g["n"] != deer_seed_n(expect_n) * len(cell["deer_seeds"]):
                     mismatches.append(f"{zh} {dszh} DEER n {deer_g['n']}")
                 if abs(deer_g["tok"] - deer_r["tok"]) > 0.51:
                     mismatches.append(
                         f"{zh} {dszh} DEER tok {deer_g['tok']:.3f} vs table {deer_r['tok']}"
                     )
                 shown = f"{deer_r['acc']:.2f}% / {deer_r['tok']}"
-                if shown not in table:
+                if shown not in table.replace("**", ""):
                     mismatches.append(f"{zh} {dszh} DEER md missing {shown}")
                 tag = {
                     "7B": "r1_7b",
                     "Nemotron": "nemotron_8b",
                     "14B": "r1_14b",
+                    "1.5B": "r1_1p5b",
+                    "Llama-8B": "r1_llama_8b",
+                    "R1-32B": "r1_32b",
                     "4B": "qwen3_4b",
                     "8B": "qwen3_8b",
+                    "30B": "qwen3_30b_a3b",
                 }[zh]
                 hit = cache.get(f"{tag}/{dataset}")
                 if not hit or abs(hit["acc"] - deer_r["acc"]) > 0.005:
@@ -251,6 +288,7 @@ def main() -> None:
                     )
                 accs["deer"].append(deer_r["acc"])
                 toks["deer"].append(deer_g["tok"])
+                ns["deer"].append(deer_g["n"])
             print(
                 f"{zh:8} {dszh:14} full={cell['full']['acc']:.2f}/{round(cell['full']['tok'])} "
                 f"puma={cell['puma']['acc']:.2f}/{round(cell['puma']['tok'])} "
@@ -260,20 +298,24 @@ def main() -> None:
                 f"deerTok={None if deer_g is None else round(deer_g['tok'])} "
                 f"missTrialQ={cell['missing_trial']}"
             )
-        n_over = len(DATASETS) + (len(OVERALL_ONLY_DATASETS) if model in EXTRA_MODELS else 0)
-        for key in ("full", "puma", "plws"):
-            o_acc = sum(round(a, 2) for a in accs[key]) / n_over
-            o_tok = sum(round(t) for t in toks[key]) / n_over
-            shown = f"{o_acc:.2f}% / {o_tok:.0f}"
-            if shown not in table:
-                mismatches.append(f"{zh} Overall {key} md missing {shown}")
-        if len(accs["deer"]) == 5:
-            shown = (
-                f"{sum(accs['deer']) / 5:.2f}% / "
-                f"{sum(round(t) for t in toks['deer']) / 5:.0f}"
-            )
-            if shown not in table:
-                mismatches.append(f"{zh} Overall DEER md missing {shown}")
+        model_rows = [
+            row for row in report["cells"] if row["model"] == zh
+        ]
+        if not model_rows:
+            continue
+        equal, weighted = overall_method_cells(collect_shown(model_rows))
+        plain = table.replace("**", "")
+        for label, cells in (
+            (OVERALL_EQ_LABEL, equal),
+            (OVERALL_NW_LABEL, weighted),
+        ):
+            for key in ("full", "puma", "plws", "deer"):
+                cell = cells.get(key)
+                if cell is None:
+                    continue
+                shown = fmt_cell(cell["acc"], cell["tok"])
+                if shown not in plain:
+                    mismatches.append(f"{zh} {label} {key} md missing {shown}")
 
     try:
         from openpyxl import load_workbook  # noqa: PLC0415
@@ -289,20 +331,50 @@ def main() -> None:
     wb = load_workbook(XLSX, rich_text=True)
     ws = wb.active
     xrows = list(ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=7, values_only=False))
-    expect_xlsx = 31
+    expect_xlsx = sum(
+        sum(
+            1
+            for dataset, _dszh, expect_n in datasets_for(model)
+            if four_seed_cell_complete(
+                paths,
+                model,
+                dataset,
+                expect_n,
+                allow_legacy=(dataset, _dszh, expect_n) in OVERALL_ONLY_DATASETS,
+            )
+        )
+        + 2
+        for model, _zh in MODELS
+    )
     if len(xrows) != expect_xlsx:
         mismatches.append(f"xlsx rows {len(xrows)} expected {expect_xlsx}")
     names = {
         "7B": "DeepSeek-R1-Distill-Qwen-7B",
         "Nemotron": "Llama-3.1-Nemotron-Nano-8B-v1",
         "14B": "DeepSeek-R1-Distill-Qwen-14B",
+        "1.5B": "DeepSeek-R1-Distill-Qwen-1.5B",
+        "Llama-8B": "DeepSeek-R1-Distill-Llama-8B",
+        "R1-32B": "DeepSeek-R1-Distill-Qwen-32B",
         "4B": "Qwen3-4B",
         "8B": "Qwen3-8B",
+        "30B": "Qwen3-30B-A3B-Thinking-2507",
     }
     xi = 0
     for model, zh in MODELS:
-        extras = OVERALL_ONLY_DATASETS if model in EXTRA_MODELS else ()
-        row_specs = list(DATASETS) + list(extras) + [("overall", "Overall（等权）", None)]
+        row_specs = [
+            item
+            for item in datasets_for(model)
+            if four_seed_cell_complete(
+                paths,
+                model,
+                item[0],
+                item[2],
+                allow_legacy=item in OVERALL_ONLY_DATASETS,
+            )
+        ] + [
+            ("overall", OVERALL_EQ_LABEL, None),
+            ("overall_nw", OVERALL_NW_LABEL, None),
+        ]
         for dataset, dszh, expect_n in row_specs:
             cell = xrows[xi]
             xi += 1

@@ -3,7 +3,6 @@
 set -euo pipefail
 
 ROOT="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-PY=/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python
 MODEL_TAG="${MODEL_TAG:?set MODEL_TAG}"
 DATASET="${DATASET:?set dataset}"
 SEED="${SEED:?set seed}"
@@ -12,6 +11,10 @@ GPU="${GPU:?set one GPU or a TP lane}"
 SHARD_ID="${SHARD_ID:-0}"
 NUM_SHARDS="${NUM_SHARDS:-1}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
+
+# shellcheck source=lib/runtime.sh
+source "$ROOT/scripts/lib/runtime.sh"
+plws_runtime_init
 
 eval "$("$PY" - "$ROOT" "$MODEL_TAG" <<'PY'
 from pathlib import Path
@@ -30,22 +33,18 @@ export PLWS_ROOT="$ROOT"
 export CUDA_VISIBLE_DEVICES="$GPU"
 export VLLM_LENS_DISABLE=1
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-export LD_LIBRARY_PATH="$(
-  "$PY" - <<'PY'
-from pathlib import Path
-root = Path("/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm")
-print(":".join(sorted({
-    str(path)
-    for path in (root / ".venv" / "lib").glob("**/nvidia/*/lib")
-    if path.is_dir()
-})))
-PY
-):${LD_LIBRARY_PATH:-}"
+plws_export_cuda_runtime
 
 jobs="$ROOT/results/runs/plws/window_first/k_4/lexicon_core/$MODEL_TAG/$DATASET/seed_$SEED/jobs/firstwin.jsonl"
 if [[ ! -f "$jobs" ]]; then
   echo "ERROR: missing jobs $jobs" >&2
   exit 1
+fi
+
+if pgrep -af "score_leftover_suppress.py --mode suppress --model-tag $MODEL_TAG --dataset $DATASET --seed $SEED" \
+  | rg -v "pgrep|$PPID|$$" >/dev/null; then
+  echo "[contest-plws] skip $MODEL_TAG $DATASET seed=$SEED: another leftover worker is already writing this cell"
+  exit 0
 fi
 
 echo "[contest-plws] start $(date -Is) $MODEL_TAG $DATASET seed=$SEED $PROTOCOL_ID gen=$GENERATION_TOKENS gpu=$GPU"

@@ -3,6 +3,7 @@
 
 Same window split and nonempty-line denominator as report_fullcot_line_start.py.
 Numerator is lines that contain the word, not only line-start hits.
+Only ATP-semantic markers: pause, new path, contrast, hedge, verify, wrap.
 """
 from __future__ import annotations
 
@@ -22,7 +23,6 @@ from plws.matrix import FIRSTWIN
 from plws.paths import PLWSPaths
 from report_fullcot_line_start import (
     DATASETS,
-    MARKERS,
     MODELS,
     SEEDS,
     nonempty_lines,
@@ -35,7 +35,42 @@ TABLE = ROOT / "tables" / "firstwin_wait" / "fullcot_anywhere.md"
 REPORT = ROOT / "results" / "reports" / "fullcot_anywhere.json"
 XLSX = ROOT / "tables" / "firstwin_wait" / "fullcot_anywhere_feishu.xlsx"
 
-SHOW = ("Wait", "Alternatively", "Hmm", "But", "Let me", "So", "Therefore")
+# Pause / new path / contrast / hedge / verify / wrap. Not function words.
+ATP_MARKERS = (
+    ("Wait", r"wait\b"),
+    ("Alternatively", r"alternatively\b"),
+    ("Hmm", r"hmm+\b|hm\b"),
+    ("But", r"but\b"),
+    ("Let me", r"let me\b"),
+    ("So", r"so\b"),
+    ("Therefore", r"therefore\b"),
+    ("However", r"however\b"),
+    ("Maybe", r"maybe\b"),
+    ("Perhaps", r"perhaps\b"),
+    ("Hold on", r"hold on\b"),
+    ("Actually", r"actually\b"),
+    ("But let", r"but let\b"),
+    ("But maybe", r"but maybe\b"),
+    ("Let me check", r"let me (?:check|verify|confirm|double-check)"),
+    ("Let me think", r"let me think"),
+    ("Let's", r"let's\b"),
+    ("double-check", r"double[- ]check\b"),
+    ("another way", r"another (?:way|approach|method)\b"),
+    ("Thus", r"thus\b"),
+    ("Instead", r"instead\b"),
+    ("等一下", r"等一下"),
+    ("换一种", r"换一种|换个(?:思路|方法)"),
+)
+SHOW = tuple(name for name, _pat in ATP_MARKERS)
+PINNED = (
+    "Wait",
+    "Alternatively",
+    "Hmm",
+    "But",
+    "Let me",
+    "So",
+    "Therefore",
+)
 COL_ORDER = ("14B", "7B", "Nemotron", "4B")
 NAMES = {
     "14B": "DeepSeek-R1-Distill-Qwen-14B",
@@ -44,8 +79,8 @@ NAMES = {
     "4B": "Qwen3-4B",
 }
 LEADING = r"^(?:[#>*\-\s]*)(?:\*\*)?"
-START = {name: re.compile(LEADING + pat, re.I) for name, pat in MARKERS if name in SHOW}
-ANY = {name: re.compile(pat, re.I) for name, pat in MARKERS if name in SHOW}
+START = {name: re.compile(LEADING + pat, re.I) for name, pat in ATP_MARKERS}
+ANY = {name: re.compile(pat, re.I) for name, pat in ATP_MARKERS}
 
 
 def pct(part: int, whole: int) -> float:
@@ -101,41 +136,37 @@ def analyze() -> dict:
     return {"stats": stats, "missing": missing}
 
 
-def write_table(stats: dict) -> list[str]:
+def _table(stats: dict, key: str) -> list[str]:
     headers = ["词", *[NAMES[zh] for zh in COL_ORDER]]
     lines = [
-        "# 窗后行内含词占行比例",
-        "",
-        "与段首占行同一套窗后非空行。分母是第一次同答窗之后按 `\\n` 切开、去掉空行的行数。",
-        "分子是这些行里**任意位置**出现该词的行数，不要求段首。",
-        "CORE 仍是整段硬禁，本表只是对照。",
-        "",
         f"| {' | '.join(headers)} |",
         f"|{'|'.join(['---'] + ['---:' for _ in COL_ORDER])}|",
     ]
     for name in SHOW:
         cells = [name]
         for zh in COL_ORDER:
-            cell = stats[zh]
-            cells.append(f"{pct(cell['contain'][name], cell['post_lines']):.2f}%")
+            cells.append(f"{pct(stats[zh][key][name], stats[zh]['post_lines']):.2f}%")
         lines.append("| " + " | ".join(cells) + " |")
-    lines.extend(
-        [
-            "",
-            "## 对照：同一分母上的段首占行",
-            "",
-            f"| {' | '.join(headers)} |",
-            f"|{'|'.join(['---'] + ['---:' for _ in COL_ORDER])}|",
-        ]
-    )
-    for name in SHOW:
-        cells = [name]
-        for zh in COL_ORDER:
-            cell = stats[zh]
-            cells.append(f"{pct(cell['start'][name], cell['post_lines']):.2f}%")
-        lines.append("| " + " | ".join(cells) + " |")
-    lines.append("")
-    lines.append("覆盖：")
+    return lines
+
+
+def write_table(stats: dict) -> list[str]:
+    lines = [
+        "# 窗后行内含词占行比例",
+        "",
+        "与段首占行同一套窗后非空行。分母是第一次同答窗之后按 `\\n` 切开、去掉空行的行数。",
+        "分子是这些行里**任意位置**出现该词的行数，不要求段首。",
+        "只收有 ATP 语义的词：停顿、改路、转折、试探、验算、收口。虚词和公式残留不进。",
+        "CORE 仍是整段硬禁，本表只是对照。",
+        "",
+        *_table(stats, "contain"),
+        "",
+        "## 对照：同一分母上的段首占行",
+        "",
+        *_table(stats, "start"),
+        "",
+        "覆盖：",
+    ]
     for zh in COL_ORDER:
         cell = stats[zh]
         lines.append(
@@ -150,22 +181,9 @@ def write_xlsx(stats: dict) -> None:
     from openpyxl.utils import get_column_letter
 
     wb = Workbook()
-    ws = wb.active
-    ws.title = "窗后行内含词"
-    headers = ["词", *[NAMES[zh] for zh in COL_ORDER]]
-    ws.append(headers)
-    for name in SHOW:
-        ws.append(
-            [
-                name,
-                *[
-                    f"{pct(stats[zh]['contain'][name], stats[zh]['post_lines']):.2f}%"
-                    for zh in COL_ORDER
-                ],
-            ]
-        )
     head = Font(bold=True, size=11)
     fill = PatternFill("solid", fgColor="FFE8EEF4")
+    pin = PatternFill("solid", fgColor="FFF3E8")
     thin = Border(
         left=Side(style="thin", color="FFD0D0D0"),
         right=Side(style="thin", color="FFD0D0D0"),
@@ -174,19 +192,45 @@ def write_xlsx(stats: dict) -> None:
     )
     center = Alignment(horizontal="center", vertical="center")
     left = Alignment(horizontal="left", vertical="center")
-    for col, _ in enumerate(headers, 1):
-        cell = ws.cell(1, col)
-        cell.font = head
-        cell.fill = fill
-        cell.alignment = center
-        cell.border = thin
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=5):
-        for i, cell in enumerate(row):
+    headers = ["词", *[NAMES[zh] for zh in COL_ORDER]]
+
+    def fill_sheet(ws, key: str) -> None:
+        ws.append(headers)
+        for name in SHOW:
+            ws.append(
+                [
+                    name,
+                    *[
+                        f"{pct(stats[zh][key][name], stats[zh]['post_lines']):.2f}%"
+                        for zh in COL_ORDER
+                    ],
+                ]
+            )
+        for col, _ in enumerate(headers, 1):
+            cell = ws.cell(1, col)
+            cell.font = head
+            cell.fill = fill
+            cell.alignment = center
             cell.border = thin
-            cell.alignment = left if i == 0 else center
-    ws.column_dimensions["A"].width = 16
-    for i in range(2, 6):
-        ws.column_dimensions[get_column_letter(i)].width = 32
+        for ridx, row in enumerate(
+            ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=5), 1
+        ):
+            for i, cell in enumerate(row):
+                cell.border = thin
+                cell.alignment = left if i == 0 else center
+                if ridx <= len(PINNED):
+                    cell.fill = pin
+        ws.column_dimensions["A"].width = 16
+        for i in range(2, 6):
+            ws.column_dimensions[get_column_letter(i)].width = 32
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:E{ws.max_row}"
+
+    ws = wb.active
+    ws.title = "行内含词ATP"
+    fill_sheet(ws, "contain")
+    other = wb.create_sheet("段首占行ATP")
+    fill_sheet(other, "start")
     wb.save(XLSX)
 
 
@@ -206,6 +250,8 @@ def main() -> None:
                 "script": "scripts/report_fullcot_anywhere.py",
                 "denominator": "post-window nonempty lines",
                 "numerator": "lines containing the word anywhere",
+                "words": list(SHOW),
+                "pinned": list(PINNED),
                 "models": {
                     zh: {
                         "post_questions": stats[zh]["post_questions"],

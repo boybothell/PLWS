@@ -1,0 +1,20 @@
+---
+description: Prevent one-off runner and test proliferation in PLWS
+globs: "{scripts/**,src/plws/**,tests/**}"
+alwaysApply: false
+---
+
+# PLWS 代码复用
+
+- 新实验先扩展现有 planner、runner 和 cell 入口；禁止复制后只改模型、seed、
+  GPU 编号或数据集。
+- GPU 编号、模型根、Python、PUMA 路径和 TP 必须做参数或环境变量，禁止写进新的
+  专用 launcher。
+- 正式生成逻辑只放原子 cell；queue 只负责任务选择、租约、冷加载串行和状态。
+- 不新增 `launch_<模型>_<GPU>.sh`、`stop_<模型>.sh`、`wait_<日期>.py` 一次性
+  文件。启动统一写成文档中的 tmux 命令。
+- 测试优先追加到覆盖同一模块的现有 `test_*.py`；只有出现独立公共模块或独立协议
+  边界时才新建测试文件。
+- 同类模型/数据集/seed 用参数化测试，禁止“一模型一个 test 文件”。
+- 删除或归档旧入口前先查调用方与测试；历史分析脚本不冒充正式主表入口。
+- 新入口必须在 `scripts/README.md` 登记，否则不视为正式入口。

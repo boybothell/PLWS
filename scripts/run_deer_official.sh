@@ -3,13 +3,15 @@
 set -euo pipefail
 
 ROOT="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-PUMA_ROOT=/mnt/d/lsj/visual-latent-tts/repos/PUMA
-PY=/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python
-MODEL="${MODEL:?set MODEL}"
 MODEL_TAG="${MODEL_TAG:?set MODEL_TAG}"
 DATASET="${DATASET:?set DATASET}"
 SEED="${SEED:?set SEED}"
 GPU="${GPU:?set GPU}"
+# shellcheck source=lib/runtime.sh
+source "$ROOT/scripts/lib/runtime.sh"
+plws_runtime_init
+PUMA_ROOT="$(cd "$PUMA_ROOT" && pwd)"
+MODEL="${MODEL:-$(plws_model_path "$MODEL_TAG")}"
 OUT="${OUT:-$ROOT/results/baselines/deer/puma_fullcot_32k_v2/$MODEL_TAG/$DATASET/seed_$SEED}"
 LIMIT="${LIMIT:-0}"
 RESULT="$OUT/deer.jsonl"
@@ -71,13 +73,7 @@ fi
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export VLLM_LENS_DISABLE=1
-export LD_LIBRARY_PATH="$(
-python3 - <<'PY'
-from pathlib import Path
-root = Path('/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm')
-print(':'.join(sorted({str(p) for p in (root/'.venv'/'lib').glob('**/nvidia/*/lib') if p.is_dir()})))
-PY
-):${LD_LIBRARY_PATH:-}"
+plws_export_cuda_runtime
 
 tmp="$OUT/.deer.jsonl.$$.part"
 rm -f "$tmp"

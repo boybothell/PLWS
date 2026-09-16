@@ -4,56 +4,26 @@
 set -euo pipefail
 
 ROOT="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-PY=/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python
 MODEL_TAG="${MODEL_TAG:?set MODEL_TAG}"
 DATASET="${DATASET:?set dataset}"
 SEED="${SEED:?set seed}"
 GPU="${GPU:?set one GPU or a TP lane}"
 
-case "$MODEL_TAG" in
-  qwen3_30b_a3b)
-    MODEL=/mnt/d/lsj/models/Qwen3-30B-A3B-Thinking-2507
-    ALIGN_CONF=Q30B-T.conf
-    ;;
-  qwq_32b)
-    MODEL=/mnt/d/lsj/models/QwQ-32B
-    ALIGN_CONF=DS-32B.conf
-    ;;
-  qwen3_32b)
-    MODEL=/mnt/d/lsj/models/Qwen3-32B
-    ALIGN_CONF=DS-32B.conf
-    ;;
-  r1_7b)
-    MODEL=/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-7B
-    ALIGN_CONF=DS-7B.conf
-    ;;
-  nemotron_8b)
-    MODEL=/mnt/d/lsj/models/Llama-3.1-Nemotron-Nano-8B-v1
-    ALIGN_CONF=Nemotron.conf
-    ;;
-  r1_14b)
-    MODEL=/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-14B
-    ALIGN_CONF=DS-14B.conf
-    ;;
-  qwen3_4b)
-    MODEL=/mnt/d/lsj/models/Qwen3-4B
-    ALIGN_CONF=DS-7B.conf
-    ;;
-  *)
-    echo "ERROR: unsupported contest MODEL_TAG=$MODEL_TAG" >&2
-    exit 2
-    ;;
-esac
+# shellcheck source=lib/runtime.sh
+source "$ROOT/scripts/lib/runtime.sh"
+plws_runtime_init
+MODEL="$(plws_model_path "$MODEL_TAG")"
+ALIGN_CONF="$(plws_align_conf "$MODEL_TAG")"
 
 TP="$(awk -F',' '{print NF}' <<<"$GPU")"
-EXPECTED_TP="$("$PY" - "$ROOT" "$MODEL_TAG" <<'PY'
+EXPECTED_TP="${PLWS_TP:-$("$PY" - "$ROOT" "$MODEL_TAG" <<'PY'
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(sys.argv[1]) / "src"))
 from plws.contest import gpu_count
 print(gpu_count(sys.argv[2]))
 PY
-)"
+)}"
 if [[ "$TP" -ne "$EXPECTED_TP" ]]; then
   echo "ERROR: $MODEL_TAG contest cells require TP=$EXPECTED_TP, got GPU=$GPU" >&2
   exit 1
@@ -76,19 +46,10 @@ export PROTOCOL_ID MAX_TOKENS ANSWER_FIX PROMPT_RESERVE MAX_MODEL_LEN
 
 export PLWS_ROOT="$ROOT"
 export VLLM_LENS_DISABLE=1
+export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
 export CUDA_VISIBLE_DEVICES="$GPU"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-export LD_LIBRARY_PATH="$(
-  "$PY" - <<'PY'
-from pathlib import Path
-root = Path("/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm")
-print(":".join(sorted({
-    str(path)
-    for path in (root / ".venv" / "lib").glob("**/nvidia/*/lib")
-    if path.is_dir()
-})))
-PY
-):${LD_LIBRARY_PATH:-}"
+plws_export_cuda_runtime
 
 if [[ "$SEED" == 42 ]]; then
   PUMA_DIR="$ROOT/results/baselines/puma/puma_offline_${MODEL_TAG}/$DATASET"
@@ -194,16 +155,8 @@ DENSE_GPU_ONLY=1 PLWS_ROOT="$ROOT" MODEL_TAG="$MODEL_TAG" DATASET="$DATASET" \
   SEED="$SEED" GPUS="$GPU" TP="$TP" SEED_LAYOUT=1 PUMA_DIR="$PUMA_DIR" \
   bash "$ROOT/scripts/run_dense_trials_model.sh"
 
-EXPORT_LOG="$ROOT/results/runs/contest_queue/logs/export__${MODEL_TAG}__${DATASET}__s${SEED}.log"
-mkdir -p "$(dirname "$EXPORT_LOG")"
-echo "[contest-prereq] detach CPU export $(date -Is) log=$EXPORT_LOG"
-nohup env \
-  PLWS_ROOT="$ROOT" \
-  PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
-  "$PY" "$ROOT/scripts/export_leftover_suppress_jobs.py" \
-  --model-tag "$MODEL_TAG" --seed "$SEED" --datasets "$DATASET" \
-  --kinds firstwin --k 4 --lexicon core \
-  >>"$EXPORT_LOG" 2>&1 &
-disown || true
+PLWS_ROOT="$ROOT" PLWS_PY="$PY" MODEL_TAG="$MODEL_TAG" DATASET="$DATASET" \
+  SEED="$SEED" CONTEST_RUN_ROOT="${CONTEST_RUN_ROOT:-$ROOT/results/runs/contest_queue}" \
+  bash "$ROOT/scripts/detach_export_leftover_jobs.sh"
 
 echo "[contest-prereq] gpu released $(date -Is) $MODEL_TAG $DATASET seed=$SEED"

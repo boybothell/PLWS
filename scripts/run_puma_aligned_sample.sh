@@ -13,12 +13,14 @@
 #     MODEL_TAG=r1_32b DATASET=math-500 SEED=123 bash scripts/run_puma_aligned_sample.sh
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PUMA_ROOT="$(cd "$ROOT/../PUMA" && pwd)"
-PY="${PY:-/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python}"
-MODEL="${MODEL:-/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-7B}"
+ROOT="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+# shellcheck source=lib/runtime.sh
+source "$ROOT/scripts/lib/runtime.sh"
+plws_runtime_init
+PUMA_ROOT="$(cd "$PUMA_ROOT" && pwd)"
 MODEL_TAG="${MODEL_TAG:-r1_7b}"
-ALIGN_CONF="${ALIGN_CONF:-DS-7B.conf}"
+MODEL="${MODEL:-$(plws_model_path "$MODEL_TAG")}"
+ALIGN_CONF="${ALIGN_CONF:-$(plws_align_conf "$MODEL_TAG")}"
 DATASET="${DATASET:?set DATASET}"
 GPU="${GPU:-0}"
 SEED="${SEED:-42}"
@@ -50,13 +52,7 @@ fi
 
 export VLLM_LENS_DISABLE=1
 export CUDA_VISIBLE_DEVICES="$GPU"
-export LD_LIBRARY_PATH="$(
-python3 - <<'PY'
-from pathlib import Path
-root = Path('/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm')
-print(':'.join(sorted({str(p) for p in (root/'.venv'/'lib').glob('**/nvidia/*/lib') if p.is_dir()})))
-PY
-):${LD_LIBRARY_PATH:-}"
+plws_export_cuda_runtime
 
 mkdir -p "$OUT"
 META="$OUT/sample_meta.json"
@@ -142,4 +138,21 @@ cd "$PUMA_ROOT"
   2>&1 | tee -a "$LOG"
 
 echo "[sample] done $(date -Is)" | tee -a "$LOG"
+PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
+"$PY" - "$OUT/answers.json" <<'PY'
+from pathlib import Path
+import json
+import sys
+from plws.piece_text import row_has_tokenizer_pieces, sanitize_rows
+
+path = Path(sys.argv[1])
+rows = json.loads(path.read_text())
+if isinstance(rows, list) and any(
+    isinstance(row, dict) and row_has_tokenizer_pieces(row) for row in rows
+):
+    path.write_text(
+        json.dumps(sanitize_rows(rows), ensure_ascii=False, indent=2) + "\n"
+    )
+    print(f"[sample] sanitized tokenizer pieces in {path}")
+PY
 echo "[sample] wrote $OUT/answers.json"

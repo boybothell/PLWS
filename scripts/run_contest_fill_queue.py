@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contest-set PUMA + PLWS queue. No DEER. Isolated from the main matrix."""
+"""Resource-aware PUMA/PLWS fill queue for selected models and datasets."""
 
 from __future__ import annotations
 
@@ -18,23 +18,26 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from plws.contest import (  # noqa: E402
-    DATASETS,
+    FILL_DATASETS,
+    FILL_MODELS,
     MODELS,
-    QUEUE_MODELS,
     ContestTask,
     batch_size,
-    build_tasks,
+    build_fill_tasks,
     cells_needing_cpu_export,
-    contest_blocked_phases,
+    contest_fill_queue_alive,
     engine_loaded_from_logs,
-    fill_leftover_dispatch,
-    is_task_log_name,
+    engine_ready_for_next_cold_start,
+    fill_dispatch,
+    fill_task_complete,
     first_open_phase,
     idle_contest_gpus,
+    is_task_log_name,
     leftover_8b_gpus,
+    log_loaded_after_latest_start,
     select_cold_starts,
     summarize,
-    task_complete,
+    vllm_workers_loading,
 )
 from plws.matrix import (  # noqa: E402
     ensure_firstwin_jobs,
@@ -43,11 +46,13 @@ from plws.matrix import (  # noqa: E402
 from plws.paths import PLWSPaths  # noqa: E402
 
 PY = "/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python"
-RUN_ROOT = ROOT / "results" / "runs" / "contest_queue"
+RUN_ROOT = Path(
+    os.environ.get("CONTEST_FILL_RUN_ROOT", ROOT / "results" / "runs" / "contest_fill")
+)
 LOG_ROOT = RUN_ROOT / "logs"
 STATUS_PATH = RUN_ROOT / "status.json"
 EVENTS_PATH = RUN_ROOT / "events.jsonl"
-DEFAULT_GPUS = ("0", "1", "2", "3", "4")
+DEFAULT_GPUS = ("0", "1", "2", "3")
 PATHS = PLWSPaths(ROOT)
 
 
@@ -158,13 +163,32 @@ def worker_pids(root_pid: int) -> list[int]:
     workers: list[int] = []
     for pid in descendant_pids(root_pid):
         comm = proc_comm(pid)
-        if comm.startswith("VLLM::Worker"):
+        if comm.startswith("VLLM::Worker") or comm.startswith("VLLM::EngineCor"):
             workers.append(pid)
             continue
         joined = " ".join(proc_cmdline(pid))
-        if "VLLM::Worker" in joined:
+        if "VLLM::Worker" in joined or "VLLM::EngineCore" in joined:
             workers.append(pid)
     return workers
+
+
+def our_worker_pids(running: dict[int, Running]) -> set[int]:
+    held: set[int] = set()
+    for item in running.values():
+        held.add(item.pid)
+        held.update(descendant_pids(item.pid))
+        held.update(worker_pids(item.pid))
+    return held
+
+
+def latest_task_log(task_id: str) -> Path:
+    attempts = sorted(
+        LOG_ROOT.glob(f"{task_id}.attempt_*.log"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if attempts:
+        return attempts[-1]
+    return LOG_ROOT / f"{task_id}.adopted.log"
 
 
 def task_log_paths(item: Running) -> list[Path]:
@@ -186,19 +210,25 @@ def task_log_paths(item: Running) -> list[Path]:
     return unique
 
 
+def current_start_log_loaded(item: Running) -> bool:
+    path = item.log_path
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return log_loaded_after_latest_start(text)
+
+
 def running_engine_loaded(item: Running) -> bool:
     workers = worker_pids(item.pid)
-    if any(pid_state(pid).startswith("D") for pid in workers):
-        item.loaded = False
-        return False
-    if workers:
-        item.loaded = True
-        return True
-    if engine_loaded_from_logs(task_log_paths(item)):
-        item.loaded = True
-        return True
-    item.loaded = False
-    return False
+    ready = engine_ready_for_next_cold_start(
+        workers_in_d=any(pid_state(pid).startswith("D") for pid in workers),
+        log_loaded=current_start_log_loaded(item),
+    )
+    item.loaded = ready
+    return ready
 
 
 def loading_items(running: dict[int, Running]) -> list[Running]:
@@ -258,6 +288,7 @@ def start_cpu_export(model: str, dataset: str, seed: int) -> subprocess.Popen:
         env={
             **os.environ,
             "PLWS_ROOT": str(ROOT),
+            "CONTEST_RUN_ROOT": str(RUN_ROOT),
             "PYTHONPATH": f"{ROOT / 'src'}{os.pathsep}{os.environ.get('PYTHONPATH', '')}".rstrip(
                 os.pathsep
             ),
@@ -272,6 +303,7 @@ def start_cpu_export(model: str, dataset: str, seed: int) -> subprocess.Popen:
 
 def kick_cpu_exports(
     models: tuple[str, ...],
+    datasets: tuple[str, ...],
     started: dict[tuple[str, str, int], subprocess.Popen],
 ) -> None:
     for key, proc in list(started.items()):
@@ -284,7 +316,9 @@ def kick_cpu_exports(
         else:
             event("cpu_export_done", **fields)
     live = live_cpu_exports() | set(started)
-    for model, dataset, seed in cells_needing_cpu_export(PATHS, models):
+    for model, dataset, seed in cells_needing_cpu_export(
+        PATHS, models, datasets=datasets
+    ):
         key = (model, dataset, seed)
         if key in live:
             continue
@@ -311,6 +345,7 @@ def env_for(task: ContestTask, gpus: tuple[str, ...]) -> dict[str, str]:
     env.update(
         {
             "PLWS_ROOT": str(ROOT),
+            "CONTEST_RUN_ROOT": str(RUN_ROOT),
             "PYTHONPATH": f"{ROOT / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(
                 os.pathsep
             ),
@@ -343,32 +378,19 @@ def adopt_running(tasks: list[ContestTask]) -> dict[int, Running]:
         env = proc_environ(pid)
         task: ContestTask | None = None
         if any(part.endswith("run_contest_prereq_cell.sh") for part in cmd):
+            if env.get("CONTEST_RUN_ROOT") != str(RUN_ROOT):
+                continue
             task = wanted.get(
                 f"prereq__{env.get('MODEL_TAG', '')}__"
                 f"{env.get('DATASET', '')}__s{env.get('SEED', '')}"
             )
-        elif any(
-            part.endswith("run_contest_plws_cell.sh")
-            or part.endswith("run_matrix_plws_cell.sh")
-            for part in cmd
-        ) or (
-            any(part.endswith("score_leftover_suppress.py") for part in cmd)
-            and "/window_first/k_4/lexicon_core/" in " ".join(cmd)
-        ):
-            try:
-                model = env.get("MODEL_TAG") or cmd[cmd.index("--model-tag") + 1]
-                dataset = env.get("DATASET") or cmd[cmd.index("--dataset") + 1]
-                seed = env.get("SEED") or cmd[cmd.index("--seed") + 1]
-                shard_id = env.get("SHARD_ID") or (
-                    cmd[cmd.index("--shard-id") + 1] if "--shard-id" in cmd else "0"
-                )
-                num_shards = env.get("NUM_SHARDS") or (
-                    cmd[cmd.index("--num-shards") + 1] if "--num-shards" in cmd else "1"
-                )
-            except (ValueError, IndexError):
+        elif any(part.endswith("run_contest_plws_cell.sh") for part in cmd):
+            if env.get("CONTEST_RUN_ROOT") != str(RUN_ROOT):
                 continue
-            shard = f"__s{shard_id}of{num_shards}" if int(num_shards) > 1 else ""
-            task = wanted.get(f"plws__{model}__{dataset}__s{seed}{shard}")
+            task = wanted.get(
+                f"plws__{env.get('MODEL_TAG', '')}__"
+                f"{env.get('DATASET', '')}__s{env.get('SEED', '')}"
+            )
         if task is None:
             continue
         gpus = tuple(
@@ -390,7 +412,7 @@ def adopt_running(tasks: list[ContestTask]) -> dict[int, Running]:
             gpus=gpus,
             adopted=True,
             started_at=now(),
-            log_path=LOG_ROOT / f"{task.task_id}.adopted.log",
+            log_path=latest_task_log(task.task_id),
         )
     return adopted
 
@@ -431,7 +453,7 @@ def write_status(
 ) -> None:
     rows = []
     for item in running.values():
-        complete, reason = task_complete(PATHS, item.task)
+        complete, reason = fill_task_complete(PATHS, item.task)
         rows.append(
             {
                 "task_id": item.task.task_id,
@@ -451,7 +473,7 @@ def write_status(
             "updated_at": now(),
             "protocol_id": "puma-fullcot-32k-v2",
             "lexicon": "core",
-            "lane": "contest",
+            "lane": "contest_fill",
             "phase": phase,
             "waiting": waiting,
             "counts": {
@@ -468,16 +490,20 @@ def write_status(
     )
 
 
-def validate(gpus: tuple[str, ...]) -> None:
+def validate(
+    gpus: tuple[str, ...],
+    models: tuple[str, ...],
+    datasets: tuple[str, ...],
+) -> None:
     if len(set(gpus)) != len(gpus):
         raise ValueError("GPU pool contains duplicates")
-    unknown = [gpu for gpu in gpus if gpu not in set("01234567")]
-    if unknown:
-        raise ValueError(f"unknown GPU ids: {unknown}")
-    if len(gpus) < 2:
-        raise ValueError("contest lane needs at least one TP=2 pair")
-    for model, path in MODELS.items():
-        if not (Path(path) / "config.json").is_file():
+    if not gpus:
+        raise ValueError("fill queue needs a GPU pool")
+    if any(not gpu.isdigit() for gpu in gpus):
+        raise ValueError(f"GPU IDs must be non-negative integers: {gpus}")
+    for model in models:
+        path = Path(MODELS[model])
+        if not (path / "config.json").is_file():
             raise FileNotFoundError(f"model missing: {model} {path}")
     for script in (
         ROOT / "scripts" / "run_contest_prereq_cell.sh",
@@ -485,8 +511,9 @@ def validate(gpus: tuple[str, ...]) -> None:
     ):
         if not script.is_file():
             raise FileNotFoundError(script)
-    for dataset in DATASETS:
-        data = ROOT.parent / "PUMA" / "data" / f"{dataset}_test.jsonl"
+    puma_root = Path(os.environ.get("PUMA_ROOT", ROOT.parent / "PUMA"))
+    for dataset in datasets:
+        data = puma_root / "data" / f"{dataset}_test.jsonl"
         if not data.is_file():
             raise FileNotFoundError(data)
 
@@ -500,25 +527,41 @@ def main() -> int:
     parser.add_argument(
         "--models",
         default="",
-        help="Comma-separated contest model tags.",
+        help="Comma-separated fill model tags.",
+    )
+    parser.add_argument(
+        "--datasets",
+        default=",".join(FILL_DATASETS),
+        help="Comma-separated PUMA dataset slugs.",
     )
     args = parser.parse_args()
     gpus = tuple(item.strip() for item in args.gpus.split(",") if item.strip())
-    validate(gpus)
     if args.models.strip():
         chosen_models = tuple(
             item.strip() for item in args.models.split(",") if item.strip()
         )
-        unknown = [model for model in chosen_models if model not in MODELS]
+        unknown = [model for model in chosen_models if model not in FILL_MODELS]
         if unknown:
-            raise ValueError(f"unknown models: {unknown}")
+            raise ValueError(f"unknown fill models: {unknown}")
     else:
-        chosen_models = QUEUE_MODELS
-    tasks = build_tasks(PATHS, models=chosen_models)
+        chosen_models = FILL_MODELS
+    chosen_datasets = tuple(
+        item.strip() for item in args.datasets.split(",") if item.strip()
+    )
+    if not chosen_datasets:
+        raise ValueError("fill queue needs at least one dataset")
+    validate(gpus, chosen_models, chosen_datasets)
+    tasks = build_fill_tasks(
+        PATHS,
+        models=chosen_models,
+        datasets=chosen_datasets,
+    )
 
     if not args.dry_run:
+        if contest_fill_queue_alive(exclude_pid=os.getpid()):
+            raise RuntimeError("another contest-fill queue is already running")
         for model in chosen_models:
-            for dataset in DATASETS:
+            for dataset in chosen_datasets:
                 for seed in (42, 0, 1, 123, 7):
                     if ensure_firstwin_jobs(PATHS, model, dataset, seed):
                         event(
@@ -538,23 +581,27 @@ def main() -> int:
 
     counts = summarize(tasks)
     if args.dry_run:
+        pending_rows = []
+        for task in tasks:
+            complete, reason = fill_task_complete(PATHS, task)
+            if not complete:
+                pending_rows.append(f"{task.phase}\t{task.task_id}\t{reason}")
         print(
             json.dumps(
                 {
                     "gpus": list(gpus),
                     "models": list(chosen_models),
                     "seeds": [42, 0, 1, 123, 7],
-                    "datasets": list(DATASETS),
+                    "datasets": list(chosen_datasets),
                     "counts": counts,
+                    "pending": len(pending_rows),
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         )
-        for task in tasks:
-            complete, reason = task_complete(PATHS, task)
-            if not complete:
-                print(f"{task.phase}\t{task.task_id}\t{reason}")
+        for row in pending_rows:
+            print(row)
         return 0
 
     running = adopt_running(tasks)
@@ -568,7 +615,7 @@ def main() -> int:
         if task.task_id in claimed:
             event("task_adopted", task_id=task.task_id)
             continue
-        complete, reason = task_complete(PATHS, task)
+        complete, reason = fill_task_complete(PATHS, task)
         if complete:
             succeeded.append(task.task_id)
             event("task_reconciled", task_id=task.task_id, reason=reason)
@@ -598,7 +645,7 @@ def main() -> int:
             finished = [pid for pid in running if not pid_alive(pid)]
             for pid in finished:
                 item = running.pop(pid)
-                complete, reason = task_complete(PATHS, item.task)
+                complete, reason = fill_task_complete(PATHS, item.task)
                 if complete:
                     succeeded.append(item.task.task_id)
                     event(
@@ -639,24 +686,42 @@ def main() -> int:
             leftover = leftover_8b_gpus()
             free = idle_contest_gpus(gpus, used, leftover=leftover)
             still_loading = loading_items(running)
-            kick_cpu_exports(chosen_models, cpu_exports)
-            blocked = contest_blocked_phases(
-                pending, {item.task.phase for item in running.values()}
-            )
-            candidates = fill_leftover_dispatch(
-                pending, len(free), PATHS, blocked_phases=blocked
+            foreign_loading = vllm_workers_loading(our_worker_pids(running))
+            kick_cpu_exports(chosen_models, chosen_datasets, cpu_exports)
+            running_gpu_counts = [item.task.gpu_count for item in running.values()]
+            candidates = fill_dispatch(
+                pending,
+                len(free),
+                PATHS,
+                running_gpu_counts=running_gpu_counts,
+                pool_size=len(gpus),
             )
             waiting = None
             need = max((task.gpu_count for task in pending), default=1)
+            dual_pending = any(task.gpu_count >= 2 for task in pending)
+            dual_running = any(count >= 2 for count in running_gpu_counts)
             if leftover:
                 waiting = "8B leftover holding " + ",".join(sorted(leftover, key=int))
-            elif still_loading:
-                waiting = "serial load: waiting for " + ",".join(
-                    item.task.task_id for item in still_loading
+            elif still_loading or foreign_loading:
+                names = [item.task.task_id for item in still_loading]
+                if foreign_loading:
+                    names.append("foreign-vllm")
+                waiting = "serial load: waiting for " + ",".join(names)
+            elif (
+                dual_pending
+                and not dual_running
+                and pending
+                and not candidates
+                and 0 < len(free) < 2
+            ):
+                waiting = (
+                    f"holding {len(free)} GPU in pool {','.join(gpus)} "
+                    "to pair TP=2 next to the 1-GPU lane"
                 )
             elif pending and not candidates and len(free) < need:
                 waiting = f"only {len(free)} idle GPU in pool {','.join(gpus)}"
-            for fit in select_cold_starts(candidates, any_loading=bool(still_loading)):
+            any_loading = bool(still_loading) or foreign_loading
+            for fit in select_cold_starts(candidates, any_loading=any_loading):
                 if len(free) < fit.gpu_count:
                     break
                 pending.remove(fit)

@@ -20,6 +20,7 @@ from plws.protocol import (
     PROTOCOL_ID,
     TRUNCATED_ANSWER_FIX_TOKENS,
 )
+from plws.runtime import model_path
 
 FIVE_MODELS = ("r1_7b", "nemotron_8b", "r1_14b", "qwen3_4b", "qwen3_8b")
 EIGHT_MODEL = "qwen3_8b"
@@ -59,12 +60,15 @@ AIME4S_MODELS = frozenset({"qwen3_4b", "qwen3_8b"})
 AIME_DATASETS = frozenset({"aime24", "aime25"})
 
 MODELS = {
-    "r1_7b": "/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-7B",
-    "nemotron_8b": "/mnt/d/lsj/models/Llama-3.1-Nemotron-Nano-8B-v1",
-    "r1_14b": "/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-14B",
-    "qwen3_4b": "/mnt/d/lsj/models/Qwen3-4B",
-    "qwen3_8b": "/mnt/d/lsj/models/Qwen3-8B",
-    "qwen3_30b_a3b": "/mnt/d/lsj/models/Qwen3-30B-A3B-Thinking-2507",
+    tag: str(model_path(tag))
+    for tag in (
+        "r1_7b",
+        "nemotron_8b",
+        "r1_14b",
+        "qwen3_4b",
+        "qwen3_8b",
+        "qwen3_30b_a3b",
+    )
 }
 
 BLOCKER_STATUS = (

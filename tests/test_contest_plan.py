@@ -21,12 +21,12 @@ from plws.contest import (
     fill_contest_dispatch,
     fill_leftover_dispatch,
     is_task_log_name,
+    log_loaded_after_latest_start,
     log_shows_engine_loaded,
     select_cold_starts,
     first_open_phase,
     gpu_count,
     idle_contest_gpus,
-    is_contest_queue_cmd,
     is_eight_olympiad_leftover_cmd,
     leftover_gpus_from_proc,
     may_sample_fullcot,
@@ -323,6 +323,12 @@ class ContestPlanTest(unittest.TestCase):
         )
         self.assertTrue(log_shows_engine_loaded("suppress shard0 official-batch step=8"))
         self.assertFalse(log_shows_engine_loaded("Loading safetensors checkpoint shards"))
+        stale = (
+            "# old start gpus=0\nModel loaded.\n"
+            "# new start gpus=0\nLoading model from scratch...\n"
+        )
+        self.assertFalse(log_loaded_after_latest_start(stale))
+        self.assertTrue(log_loaded_after_latest_start(stale + "Model loaded.\n"))
         pending = [
             prereq_task("qwen3_30b_a3b", "hmmt25", 7),
             plws_task("qwen3_30b_a3b", "aime24", 42),
@@ -379,14 +385,6 @@ class ContestPlanTest(unittest.TestCase):
                     "--seed",
                     "42",
                 ]
-            )
-        )
-        self.assertTrue(
-            is_contest_queue_cmd(["python", "/repo/scripts/run_contest_queue.py", "--gpus", "3,4,5,6"])
-        )
-        self.assertFalse(
-            is_contest_queue_cmd(
-                ["python", "/repo/scripts/run_contest_queue.py", "--dry-run"]
             )
         )
         self.assertEqual(

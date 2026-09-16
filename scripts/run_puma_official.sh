@@ -7,9 +7,11 @@ set -euo pipefail
 
 AE="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 export PLWS_ROOT="$AE"
-PUMA_ROOT="${PUMA_ROOT:-$AE/../PUMA}"
+# shellcheck source=lib/runtime.sh
+ROOT="$AE"
+source "$AE/scripts/lib/runtime.sh"
+plws_runtime_init
 PUMA_ROOT="$(cd "$PUMA_ROOT" && pwd)"
-PY="${PY:-/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python}"
 export PYTHONPATH="$AE/src${PYTHONPATH:+:$PYTHONPATH}"
 MODEL="${MODEL:?set MODEL}"
 MODEL_TAG="${MODEL_TAG:?set MODEL_TAG}"
@@ -136,13 +138,7 @@ export CUDA_VISIBLE_DEVICES="$GPU"
 # Keep this scoped to the backfill wrapper and allow an explicit override.
 export VLLM_GPU_MEMORY_UTILIZATION="${PUMA_VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
 export PYTHON="$PY"
-export LD_LIBRARY_PATH="$(
-python3 - <<'PY'
-from pathlib import Path
-root = Path('/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm')
-print(':'.join(sorted({str(p) for p in (root/'.venv'/'lib').glob('**/nvidia/*/lib') if p.is_dir()})))
-PY
-):${LD_LIBRARY_PATH:-}"
+plws_export_cuda_runtime
 
 echo "[puma-official] GPU=$GPU $MODEL_TAG $DATASET seed=$SEED -> $PUMA_DIR"
 cd "$PUMA_ROOT"

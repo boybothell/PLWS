@@ -1,0 +1,1473 @@
+diff --git a/baselines/README.md b/baselines/README.md
+index 74fe183..7a32e07 100644
+--- a/baselines/README.md
++++ b/baselines/README.md
+@@ -48,7 +48,10 @@ python -m baselines.run_deer \
+ **Options:**
+ - `--threshold 0.95`: Confidence threshold for early exit (default: 0.95)
+ - `--atp Wait`: Action Transition Point string — `Wait` or `Alternatively` (default: Wait)
+-- `--policy avg1`: Confidence calculation policy — `avg1`, `avg2`, or `min` (default: avg2)
++- `--policy auto`: Model-family confidence policy (default: R1/Nemotron `avg1`,
++  Qwen3 `avg2`; explicit override must match the family policy)
++- DEER retains its family policy under the shared host: R1/Nemotron use
++  `think_ratio=0.6`; Qwen3 uses `think_ratio=0.8` and requires probe `</think>`
+ - `--max-judge-steps 10`: Max confidence checks per question (default: 10)
+ - `--enable-repetition-exit`: Enable early exit on repetition detection
+ - `--eval-only`: Skip inference, only compute metrics
+diff --git a/baselines/deer/vllm_deer.py b/baselines/deer/vllm_deer.py
+index 4a670fb..32004ef 100644
+--- a/baselines/deer/vllm_deer.py
++++ b/baselines/deer/vllm_deer.py
+@@ -10,6 +10,9 @@ import sys
+ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ if _PROJECT_ROOT not in sys.path:
+     sys.path.insert(0, _PROJECT_ROOT)
++_PUMA_MODULE_ROOT = os.path.join(_PROJECT_ROOT, "puma")
++if _PUMA_MODULE_ROOT not in sys.path:
++    sys.path.insert(0, _PUMA_MODULE_ROOT)
+ import torch
+ import torch.nn.functional as F
+ from vllm.outputs import CompletionOutput
+@@ -22,6 +25,18 @@ from tqdm import tqdm
+ from vllm import LLM, SamplingParams
+ from baselines.utils.generation_config import load_generation_params
+ from baselines.utils.math_util import extract_code_answer, CODE_SYS_PROMPT, CODE_ANSWER_SUFFIX
++from baselines.deer.canonical_protocol import (
++    CANONICAL_MAX_MODEL_LEN,
++    FULLCOT_GENERATION_TOKENS,
++    PROMPT_RESERVE_TOKENS,
++    PROTOCOL_ID,
++    TRUNCATED_ANSWER_FIX_TOKENS,
++    answer_budget,
++    policy_for_model,
++    probe_gate_passed,
++)
++from prompt_utils import get_task_type
++from run_vllm import build_prompts_with_chat_template
+ import pdb
+ 
+ import math
+@@ -144,6 +159,8 @@ def calculate_average_max_prob_from_logprobs(logprobs_list, policy='avg2') -> fl
+                  print(f"Warning: Unable to process logprobs at logprobs_list[{i}]: {e}")
+         else:
+              print(f"Warning: logprobs_list[{i}] is empty or invalid.")
++    if count_for_average == 0:
++        return 0.0
+     # Calculate average
+     if policy == 'min':
+         result = min_prob
+@@ -155,12 +172,26 @@ def calculate_average_max_prob_from_logprobs(logprobs_list, policy='avg2') -> fl
+     return result
+ 
+ 
++def probe_ended_with_think_close(completion_output) -> bool:
++    """Version-tolerant implementation of Qwen3's DEER safety gate."""
++
++    if str(getattr(completion_output, "stop_reason", "") or "") == "</think>":
++        return True
++    for token_logprobs in reversed(completion_output.logprobs or []):
++        for item in token_logprobs.values():
++            if getattr(item, "decoded_token", None) == "</think>":
++                return True
++        if token_logprobs:
++            break
++    return "</think>" in str(getattr(completion_output, "text", ""))
++
++
+ def parse_args():
+     parser = argparse.ArgumentParser()
+     parser.add_argument('--model_name_or_path', type=str, default="./DeepSeek-R1-Distill-Qwen-14B/")
+     parser.add_argument('--dataset_dir', type=str, default="data/")
+     parser.add_argument("--dtype", type=str, default="bfloat16")
+-    parser.add_argument("--max-model-len", "--model-context-len", type=int, default=40000, dest="model_context_len") # max-model-len for vllm, should be longer than max_generated_tokens.
++    parser.add_argument("--max-model-len", "--model-context-len", type=int, default=CANONICAL_MAX_MODEL_LEN, dest="model_context_len")
+     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+     parser.add_argument("--trust-remote-code", action="store_true")
+     parser.add_argument("--run_time", type=int, default=1)
+@@ -169,26 +200,68 @@ def parse_args():
+     parser.add_argument("--points", type=int, default=1) # 1: 'Wait' as thinking transition point. 0: 'Alternatively' as thinking transition point. 
+     parser.add_argument("--af", type=int, default=0) # answer forcing at end of sequence
+     parser.add_argument("--max_judge_steps", type=int, default=10) # Limit the maximum number of answer attempts to save time cost.
+-    parser.add_argument('--policy', type=str, default="avg1") # Strategy for Calculating Answer Confidence
++    parser.add_argument('--policy', type=str, default=None, choices=["avg1", "avg2", "min"])
+ 
+     parser.add_argument('--threshold', type=float, default=0.95) # The answer confidence threshold used to determine early exit.
+     parser.add_argument('--max_generated_tokens', '--max-len', type=int, default=32768, dest="max_len") # total token budget
+     parser.add_argument('--dataset', type=str, default='aime24') # dataset name
+     parser.add_argument('--output_path', type=str, default='./outputs/deer.jsonl') # output path # ./outputs/deer_vanilla.jsonl
+-    parser.add_argument('--think_ratio', type=float, default=0.9, help="Ratio of thinking phase to max generated tokens") # Ratio of thinking phase to max generated tokens
++    parser.add_argument('--think_ratio', type=float, default=None)
++    parser.add_argument('--answer_fix_max_tokens', type=int, default=TRUNCATED_ANSWER_FIX_TOKENS)
++    parser.add_argument('--prompt_version', type=str, default='default')
++    parser.add_argument('--protocol_id', type=str, default=PROTOCOL_ID)
+     parser.add_argument('--batch_size', type=int, default=2000) # vllm batch size, set it to a value above the number of samples in the dataset.
++    parser.add_argument('--limit', type=int, default=0)
+     parser.add_argument('--seed', type=int, default=0, help="Random seed for vLLM (default: 0)")
+     parser.add_argument('--temperature', type=float, default=0.6)
+     parser.add_argument('--top_p', type=float, default=0.95)
+     
+     # Hardcoded 20
+     parser.add_argument('--prob_check_max_tokens', type=int, default=20, help="Max tokens for probability check phase") # Max tokens for answer inducing
+-    
++    parser.add_argument(
++        '--dump_checks',
++        action='store_true',
++        help="Record every Wait/prob_check (conf, trial text, think len) into output JSONL",
++    )
++
+     args = parser.parse_args()
+     return args
+ 
+ def main():
+     args = parse_args()
++    family_policy = policy_for_model(args.model_name_or_path)
++    if args.think_ratio is None:
++        args.think_ratio = family_policy.think_ratio
++    if args.policy is None:
++        args.policy = family_policy.confidence_policy
++    required = {
++        "protocol_id": (args.protocol_id, PROTOCOL_ID),
++        "max_generated_tokens": (args.max_len, FULLCOT_GENERATION_TOKENS),
++        "answer_fix_max_tokens": (
++            args.answer_fix_max_tokens,
++            TRUNCATED_ANSWER_FIX_TOKENS,
++        ),
++        "max_model_len": (args.model_context_len, CANONICAL_MAX_MODEL_LEN),
++        "prompt_version": (args.prompt_version, "default"),
++        "think_ratio": (args.think_ratio, family_policy.think_ratio),
++        "confidence_policy": (
++            args.policy,
++            family_policy.confidence_policy,
++        ),
++    }
++    mismatches = [
++        f"{name}={actual!r} (required {expected!r})"
++        for name, (actual, expected) in required.items()
++        if actual != expected
++    ]
++    if mismatches:
++        raise ValueError(
++            f"{PROTOCOL_ID} mismatch: " + ", ".join(mismatches)
++        )
++    if args.no_thinking != 0 or args.rep != 0 or args.af != 0:
++        raise ValueError(
++            f"{PROTOCOL_ID} requires no_thinking=0, rep=0, af=0"
++        )
+ 
+     # Load generation params from model's generation_config.json
+     gen_params = load_generation_params(args.model_name_or_path)
+@@ -196,15 +269,21 @@ def main():
+     args.top_p = gen_params["top_p"]
+     args.top_k = gen_params["top_k"]
+ 
+-    args.model_context_len = args.max_len + 8000
+     print(f"Using vLLM LLM object for direct inference (batch processing)")
+     print(f"Model path: {args.model_name_or_path}")
+     print(f"Dataset: {args.dataset}")
+     print(f"Early exit probability threshold: {args.threshold}")
+     print(f"Max total generated tokens: {args.max_len}")
++    print(f"DEER family policy: {family_policy.name}")
+     print(f"Thinking phase ratio: {args.think_ratio}")
++    print(f"Confidence policy: {args.policy}")
++    print(
++        "Probe </think> gate: "
++        f"{family_policy.require_probe_think_close}"
++    )
+     print(f"Batch size: {args.batch_size}")
+     print(f"Max tokens for probability check phase: {args.prob_check_max_tokens}")
++    print(f"Dump checks: {getattr(args, 'dump_checks', False)}")
+ 
+     print("\nInitializing vLLM LLM engine...")
+     available_gpus = os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')
+@@ -214,7 +293,7 @@ def main():
+             model=args.model_name_or_path,
+             tensor_parallel_size=len(available_gpus),
+             dtype=args.dtype,
+-            max_model_len=args.max_len + 8000,
++            max_model_len=args.model_context_len,
+             gpu_memory_utilization=args.gpu_memory_utilization,
+             trust_remote_code=True,
+             seed=args.seed,
+@@ -242,14 +321,14 @@ def main():
+         sys_prompt = CODE_SYS_PROMPT
+         args.prob_check_max_tokens = 200  # code answers are longer
+         print(f"Code task detected: using code system prompt, prob_check_max_tokens={args.prob_check_max_tokens}")
+-    else:
+-        sys_prompt = 'Please reason step by step, and put your final answer within \\boxed{}.'
+     dataset_path = f'{args.dataset_dir}/{args.dataset}_test.jsonl'
+     try:
+         questions_json = read_jsonl(dataset_path)
+         if not questions_json:
+             print(f"Error: No questions loaded from {dataset_path}.")
+             sys.exit(1)
++        if args.limit > 0:
++            questions_json = questions_json[: args.limit]
+         print(f"Successfully loaded dataset: {dataset_path}, total {len(questions_json)} questions")
+     except Exception as e:
+         print(f"Failed to load dataset: {e}")
+@@ -275,20 +354,15 @@ def main():
+     else:
+         answer_prompt_str = "\n**Final Answer**\n\\boxed" # Prompt string to guide answer generation
+ 
+-    # Get token IDs for stop conditions and strings to append
+-    last_token_ids = []
+-    for s in last_token_strs:
+-        ids = tokenizer.encode(s, add_special_tokens=False)
+-        if ids: last_token_ids.extend(ids)
+-    last_token_ids = list(set(last_token_ids)) # Remove duplicate IDs
+-
+     continue_ids = tokenizer.encode(continue_str, add_special_tokens=False)
+     if not continue_ids:
+          print(f"Warning: Unable to tokenize continue string '{continue_str}'. This may affect logic.")
+ 
+     # Stop tokens for thinking phase generation
+     generation_stop_tokens = [continue_str] + last_token_strs + [tokenizer.eos_token]
+-    if is_code:
++    if family_policy.require_probe_think_close:
++        pred_prob_stop_tokens = ["</think>"]
++    elif is_code:
+         pred_prob_stop_tokens = ["```\n", "```"]  # end of code block
+     else:
+         pred_prob_stop_tokens = [' }', '}\n', '}\n\n', '}.', '}.\n', '}\\', '}}', ')}', ')}.', ')}\n'] # where \boxed{} ends. Used to stop the model from predicting intermediate answers.
+@@ -296,15 +370,27 @@ def main():
+     answer_stop_tokens = [tokenizer.eos_token]
+     
+ 
+-    # Max token limit for thinking phase
++    # The 32K host budget is shared. DEER retains its own family-specific
++    # thinking ceiling inside that budget; probes are side-channel cost.
+     think_limit_tokens = int(args.max_len * args.think_ratio)
++    task_type = get_task_type(args.dataset)
+ 
+     for i, question_data in enumerate(questions_json):
+-        messages = [
+-            {"role": "system", "content": sys_prompt},
+-            {"role": "user", "content": question_data['question']}
+-        ]
+-        formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
++        formatted_prompt = build_prompts_with_chat_template(
++            [question_data["question"]],
++            tokenizer,
++            args.model_name_or_path,
++            task_type,
++            args.prompt_version,
++        )[0]
++        prompt_tokens = len(
++            tokenizer.encode(formatted_prompt, add_special_tokens=False)
++        )
++        if prompt_tokens > PROMPT_RESERVE_TOKENS:
++            raise ValueError(
++                f"prompt exceeds {PROMPT_RESERVE_TOKENS}-token reserve: "
++                f"question={i} tokens={prompt_tokens}"
++            )
+ 
+         if args.no_thinking == 1:
+             questions_state[i] = {
+@@ -320,8 +406,20 @@ def main():
+             'rep_end': 0,
+             'high_prob': 0,
+             'regular_end': 0,
++            'natural_think_close': False,
++            'used_truncated_answer_fix': False,
++            'method_limit_reached': False,
++            'host_answer_fix_required': False,
++            'probe_think_closed': None,
++            'exit_reason': None,
++            'answer_budget': 0,
++            'thought_finish_reason': None,
++            'thought_stop_reason': None,
++            'answer_finish_reason': None,
++            'answer_stop_reason': None,
+             'thinking_steps': 0,
+             'num_trial_answer_tokens': 0,
++            'checks': [],
+             'output_dict': {}, 
+             'error_message': None, 
+             'question_index': i 
+@@ -340,8 +438,20 @@ def main():
+             'rep_end': 0,
+             'high_prob': 0,
+             'regular_end': 0,
++            'natural_think_close': False,
++            'used_truncated_answer_fix': False,
++            'method_limit_reached': False,
++            'host_answer_fix_required': False,
++            'probe_think_closed': None,
++            'exit_reason': None,
++            'answer_budget': 0,
++            'thought_finish_reason': None,
++            'thought_stop_reason': None,
++            'answer_finish_reason': None,
++            'answer_stop_reason': None,
+             'thinking_steps': 0,
+             'num_trial_answer_tokens': 0,
++            'checks': [],
+             'output_dict': {}, 
+             'error_message': None, 
+             'question_index': i 
+@@ -406,6 +516,8 @@ def main():
+                         state['state'] = 'needs_answer'
+                         print(f"\nQuestion {q_idx}: Reached thinking limit ({current_generated_thinking_tokens}/{think_limit_tokens}). Switching to answer generation.")
+                         state['too_long'] = 1
++                        state['method_limit_reached'] = True
++                        state['exit_reason'] = 'method_think_limit'
+                         continue 
+                          
+ 
+@@ -451,7 +563,7 @@ def main():
+                     prompt_for_batch = prompt_for_prob_check
+                     sampling_params_for_batch = SamplingParams(
+                         max_tokens=args.prob_check_max_tokens,
+-                        temperature=args.temperature, 
++                        temperature=0.0,
+                         stop=pred_prob_stop_tokens, # Only predict content inside \boxed{}
+                         logprobs=1,
+                     )
+@@ -459,24 +571,32 @@ def main():
+ 
+ 
+                 elif state['state'] == 'needs_answer':
+-                    # Build final answer prompt
+-                    
+-                    if state['too_long'] == 1:
+-                        final_answer_prompt = state['formatted_prompt'] + state['generated_thinking_history'] + '\n</think>\n\n'
+-                        state['generated_thinking_history'] = state['generated_thinking_history'] + '\n</think>\n\n'
+-                        
+-                    else:
+-                        final_answer_prompt = state['formatted_prompt'] + state['generated_thinking_history'] + '\n</think>\n\n'#+ answer_prompt_str
+-                        state['generated_thinking_history'] = state['generated_thinking_history'] + '\n</think>\n\n'
+-                    
++                    # vLLM excludes a matched stop string by default. Close the
++                    # thinking block exactly once for natural and forced exits.
++                    if "</think>" not in state['generated_thinking_history']:
++                        state['generated_thinking_history'] += '\n</think>\n\n'
++                    final_answer_prompt = (
++                        state['formatted_prompt']
++                        + state['generated_thinking_history']
++                    )
+                     len_final_answer_prompt = len(tokenizer.encode(final_answer_prompt, add_special_tokens=False))
+-                    total_tokens_before_answer_prompt = current_generated_thinking_tokens
+-                    # Calculate remaining total budget
+-                    remaining_total_budget = args.max_len - total_tokens_before_answer_prompt
+-                    max_new_tokens_answer = min(
+-                       remaining_total_budget,
+-                       args.model_context_len - len_final_answer_prompt
++                    delivered_thinking_tokens = len(
++                        tokenizer.encode(
++                            state['generated_thinking_history'],
++                            add_special_tokens=False,
++                        )
++                    )
++                    _requested_answer_budget, max_new_tokens_answer = answer_budget(
++                        delivered_thinking_tokens=delivered_thinking_tokens,
++                        host_answer_fix=state['host_answer_fix_required'],
++                        context_room=(
++                            args.model_context_len - len_final_answer_prompt
++                        ),
+                     )
++                    state['used_truncated_answer_fix'] = state[
++                        'host_answer_fix_required'
++                    ]
++                    state['answer_budget'] = max_new_tokens_answer
+                     
+                     if max_new_tokens_answer <= 0:
+                         
+@@ -495,6 +615,7 @@ def main():
+                             temperature=args.temperature,
+                             stop=answer_stop_tokens,
+                             top_p=args.top_p,
++                            top_k=args.top_k,
+                          )
+                          step_type = 'answer'
+ 
+@@ -615,38 +736,81 @@ def main():
+                 completion_output = output.outputs[0]
+                 generated_text = completion_output.text
+                 generated_ids = completion_output.token_ids
+-                last_token_id = generated_ids[-1]
++                last_token_id = generated_ids[-1] if generated_ids else None
++                stop_reason = str(
++                    getattr(completion_output, "stop_reason", "") or ""
++                )
++                finish_reason = str(
++                    getattr(completion_output, "finish_reason", "") or ""
++                )
+ 
+                 rep = seq_rep_n(state['generated_thinking_last_trun'], generated_text, state['rep_end'])
+                 state['rep_end'] = rep
+                 
+                 
+                 if step_type == 'think':
++                    state['thought_finish_reason'] = finish_reason
++                    state['thought_stop_reason'] = stop_reason
++                    state['generated_thinking_history'] += generated_text
++                    state['current_full_sequence'] = (
++                        state['formatted_prompt']
++                        + state['generated_thinking_history']
++                    )
++                    thinking_tokens_after = len(
++                        tokenizer.encode(
++                            state['generated_thinking_history'],
++                            add_special_tokens=False,
++                        )
++                    )
++                    natural_close = (
++                        stop_reason == "</think>"
++                        or "</think>" in generated_text
++                    )
+                     if state['rep_end'] >= 3 and args.rep == 1: 
+                         state['state'] = 'needs_answer'
+-                        state['generated_thinking_history'] += generated_text
+-                        state['current_full_sequence'] = state['formatted_prompt'] + state['generated_thinking_history']
++                        state['exit_reason'] = 'repetition_exit'
+                         #state['rep_end'] = 1
+-                    elif last_token_id in last_token_ids:
++                    elif natural_close:
+                         state['state'] = 'needs_answer'
+-                        state['generated_thinking_history'] += generated_text
+-                        state['current_full_sequence'] = state['formatted_prompt'] + state['generated_thinking_history']
+                         state['regular_end'] = 1
++                        state['natural_think_close'] = True
++                        state['exit_reason'] = 'natural_close'
++                    elif (
++                        finish_reason == "stop"
++                        and stop_reason
++                        and stop_reason != continue_str
++                    ):
++                        state['state'] = 'needs_answer'
++                        state['too_long'] = 1
++                        state['host_answer_fix_required'] = True
++                        state['exit_reason'] = 'eos_without_close'
++                    elif thinking_tokens_after >= think_limit_tokens:
++                        state['state'] = 'needs_answer'
++                        state['too_long'] = 1
++                        state['method_limit_reached'] = True
++                        state['exit_reason'] = 'method_think_limit'
+                     else:
+-                        # Append generated thinking chunk
+-                        state['generated_thinking_history'] += generated_text
+                         state['generated_thinking_last_trun'] = generated_text
+-                        state['current_full_sequence'] = state['formatted_prompt'] + state['generated_thinking_history']
+                         state['state'] = 'needs_prob_check'
+                         state['thinking_steps'] += 1
+ 
+                 elif step_type == 'prob_check_gen':
+                     # Get logprobs for probability calculation.
+-                    if completion_output.logprobs:
++                    state['probe_think_closed'] = probe_ended_with_think_close(
++                        completion_output
++                    )
++                    gate_passed = probe_gate_passed(
++                        family_policy,
++                        probe_think_closed=state['probe_think_closed'],
++                    )
++                    if completion_output.logprobs and gate_passed:
+                          state['pred_prob'] = calculate_average_max_prob_from_logprobs(completion_output.logprobs, args.policy)
+                          
+                     else:
+-                         print(f"Warning: No logprobs returned for prob_check_gen for question {q_idx}. Setting pred_prob to 0.0.")
++                         if not completion_output.logprobs:
++                             print(f"Warning: No logprobs returned for prob_check_gen for question {q_idx}. Setting pred_prob to 0.0.")
++                         elif not gate_passed:
++                             print(f"Question {q_idx}: Qwen3 probe did not close </think>; confidence rejected.")
+                          state['pred_prob'] = 0.0
+ 
+                     # Accumulate trial answer tokens for CRT calculation
+@@ -654,26 +818,62 @@ def main():
+ 
+                     # Recalculate current thinking history token length before making decision
+                     current_generated_thinking_tokens = len(tokenizer.encode(state['generated_thinking_history'], add_special_tokens=False))
+-                    thinking_limit_reached = current_generated_thinking_tokens >= think_limit_tokens - 50 
++                    thinking_limit_reached = current_generated_thinking_tokens >= think_limit_tokens
+ 
+                     if state['pred_prob'] > args.threshold or thinking_limit_reached: # Third condition: already generated to </think>
+                          # Probability high enough or reached thinking limit, switch to answer phase
+                          state['state'] = 'needs_answer'
+                          if thinking_limit_reached:
++                             exit_reason = "think_limit"
++                             state['exit_reason'] = "method_think_limit"
+                              print(f"\nQuestion {q_idx}: Actually reached thinking limit ({current_generated_thinking_tokens}/{think_limit_tokens}). Switching to answer phase.")
+                              state['too_long'] = 1
++                             state['method_limit_reached'] = True
+                          else:
++                             exit_reason = "conf_exit"
++                             state['exit_reason'] = "conf_exit"
+                              print(f"\nQuestion {q_idx}: Reached early exit threshold ({state['pred_prob']:.4f} > {args.threshold}). Switching to answer phase.")
+                              state['high_prob'] = 1
+                     else:
++                         exit_reason = "continue"
+                          # Probability not high enough, need more thinking
+                          state['state'] = 'needs_thought_chunk'
+                          if not state['current_full_sequence'].strip().endswith(continue_str) and state['thinking_steps'] != 0:
+                              state['current_full_sequence'] += continue_str
+                              state['generated_thinking_history'] += continue_str
++                             after_continue_tokens = len(
++                                 tokenizer.encode(
++                                     state['generated_thinking_history'],
++                                     add_special_tokens=False,
++                                 )
++                             )
++                             if after_continue_tokens >= think_limit_tokens:
++                                 state['state'] = 'needs_answer'
++                                 state['too_long'] = 1
++                                 state['method_limit_reached'] = True
++                                 state['exit_reason'] = 'method_think_limit'
++                                 exit_reason = 'think_limit'
+                          print(f"\nQuestion {q_idx}: Early exit threshold not reached ({state['pred_prob']:.4f} <= {args.threshold}), thinking history length ({current_generated_thinking_tokens}/{think_limit_tokens}). Appending '{continue_str}' and continuing thinking.")
+ 
++                    if getattr(args, "dump_checks", False):
++                        state["checks"].append(
++                            {
++                                "judge_idx": int(state["thinking_steps"]),
++                                "conf": float(state["pred_prob"]),
++                                "threshold": float(args.threshold),
++                                "policy": args.policy,
++                                "trial_text": generated_text,
++                                "probe_think_closed": state['probe_think_closed'],
++                                "probe_gate_required": family_policy.require_probe_think_close,
++                                "think_token_len": int(current_generated_thinking_tokens),
++                                "exit_reason": exit_reason,
++                                "continue_str": continue_str,
++                            }
++                        )
++
+                 elif step_type == 'answer':
++                    state['answer_finish_reason'] = finish_reason
++                    state['answer_stop_reason'] = stop_reason
+                     state['generated_answer_history'] += (generated_text)
+                     if last_token_id != tokenizer.eos_token_id and args.af == 1:
+                         state['state'] = 'answer_forcing'
+@@ -685,12 +885,36 @@ def main():
+                             'question': state['question_data']['question'],
+                             'generated_text': final_response_text,
+                             'gold_answer': state['question_data']['answer'],
++                            'protocol_id': PROTOCOL_ID,
++                            'fullcot_generation_tokens': args.max_len,
++                            'truncated_answer_fix_tokens': args.answer_fix_max_tokens,
++                            'max_model_len': args.model_context_len,
++                            'prompt_version': args.prompt_version,
++                            'deer_family_policy': family_policy.name,
++                            'think_ratio': args.think_ratio,
++                            'confidence_policy': args.policy,
++                            'threshold': args.threshold,
++                            'require_probe_think_close': family_policy.require_probe_think_close,
+                             'too_long': state['too_long'],
++                            'natural_think_close': state['natural_think_close'],
++                            'used_truncated_answer_fix': state['used_truncated_answer_fix'],
++                            'method_limit_reached': state['method_limit_reached'],
++                            'probe_think_closed': state['probe_think_closed'],
++                            'exit_reason': state['exit_reason'],
++                            'answer_budget': state['answer_budget'],
++                            'thought_finish_reason': state['thought_finish_reason'],
++                            'thought_stop_reason': state['thought_stop_reason'],
++                            'answer_finish_reason': state['answer_finish_reason'],
++                            'answer_stop_reason': state['answer_stop_reason'],
++                            'thinking_tokens': len(tokenizer.encode(state['generated_thinking_history'], add_special_tokens=False)),
++                            'answer_tokens': len(tokenizer.encode(state['generated_answer_history'], add_special_tokens=False)),
++                            'delivery_tokens': len(tokenizer.encode(final_response_text, add_special_tokens=False)),
+                             'thinking_steps': state['thinking_steps'],
+                             'rep_end': state['rep_end'],
+                             'high_prob': state['high_prob'],
+                             'regular_end': state['regular_end'],
+                             'num_trial_answer_tokens': state['num_trial_answer_tokens'],
++                            'checks': state.get('checks', []),
+                         }
+                         if is_code:
+                             state['output_dict']['question_id'] = state['question_data'].get('question_id', '')
+@@ -707,12 +931,36 @@ def main():
+                         'question': state['question_data']['question'],
+                         'generated_text': final_response_text,
+                         'gold_answer': state['question_data']['answer'],
++                        'protocol_id': PROTOCOL_ID,
++                        'fullcot_generation_tokens': args.max_len,
++                        'truncated_answer_fix_tokens': args.answer_fix_max_tokens,
++                        'max_model_len': args.model_context_len,
++                        'prompt_version': args.prompt_version,
++                        'deer_family_policy': family_policy.name,
++                        'think_ratio': args.think_ratio,
++                        'confidence_policy': args.policy,
++                        'threshold': args.threshold,
++                        'require_probe_think_close': family_policy.require_probe_think_close,
+                         'too_long': state['too_long'],
++                        'natural_think_close': state['natural_think_close'],
++                        'used_truncated_answer_fix': state['used_truncated_answer_fix'],
++                        'method_limit_reached': state['method_limit_reached'],
++                        'probe_think_closed': state['probe_think_closed'],
++                        'exit_reason': state['exit_reason'],
++                        'answer_budget': state['answer_budget'],
++                        'thought_finish_reason': state['thought_finish_reason'],
++                        'thought_stop_reason': state['thought_stop_reason'],
++                        'answer_finish_reason': state['answer_finish_reason'],
++                        'answer_stop_reason': state['answer_stop_reason'],
++                        'thinking_tokens': len(tokenizer.encode(state['generated_thinking_history'], add_special_tokens=False)),
++                        'answer_tokens': len(tokenizer.encode(generated_text, add_special_tokens=False)),
++                        'delivery_tokens': len(tokenizer.encode(final_response_text, add_special_tokens=False)),
+                         'thinking_steps': state['thinking_steps'],
+                         'rep_end': state['rep_end'],
+                         'high_prob': state['high_prob'],
+                         'regular_end': state['regular_end'],
+                         'num_trial_answer_tokens': state['num_trial_answer_tokens'],
++                        'checks': state.get('checks', []),
+                     }
+                     if is_code:
+                         state['output_dict']['question_id'] = state['question_data'].get('question_id', '')
+@@ -757,6 +1005,16 @@ def main():
+         "wall_time_seconds": round(elapsed_time, 2),
+         "num_questions": len(final_results),
+         "method": "deer",
++        "protocol_id": PROTOCOL_ID,
++        "fullcot_generation_tokens": args.max_len,
++        "truncated_answer_fix_tokens": args.answer_fix_max_tokens,
++        "max_model_len": args.model_context_len,
++        "prompt_version": args.prompt_version,
++        "deer_family_policy": family_policy.name,
++        "think_ratio": args.think_ratio,
++        "confidence_policy": args.policy,
++        "threshold": args.threshold,
++        "require_probe_think_close": family_policy.require_probe_think_close,
+     }
+     with open(walltime_file, "w") as f:
+         json.dump(walltime_data, f, indent=2)
+diff --git a/baselines/run_deer.py b/baselines/run_deer.py
+index bb48c22..d1eacac 100644
+--- a/baselines/run_deer.py
++++ b/baselines/run_deer.py
+@@ -95,13 +95,18 @@ Examples:
+     parser.add_argument("--atp", type=str, default="Wait",
+                         choices=["Wait", "Alternatively"],
+                         help="Action Transition Point string (default: Wait)")
+-    parser.add_argument("--policy", type=str, default="avg1",
+-                        choices=["avg1", "avg2", "min"],
+-                        help="Confidence calculation policy (default: avg1)")
++    parser.add_argument("--policy", type=str, default="auto",
++                        choices=["auto", "avg1", "avg2", "min"],
++                        help="Confidence policy (default: model-family DEER policy)")
+     parser.add_argument("--max-judge-steps", type=int, default=10,
+                         help="Max confidence checks per question (default: 10)")
+     parser.add_argument("--enable-repetition-exit", action="store_true",
+                         help="Enable early exit on repetition detection")
++    parser.add_argument(
++        "--dump-checks",
++        action="store_true",
++        help="Pass --dump_checks to vllm_deer (record each Wait trial conf)",
++    )
+ 
+     # Generation parameters (passed to vllm_deer.py)
+     parser.add_argument("--seed", type=int, default=0,
+@@ -154,15 +159,18 @@ Examples:
+             "--output_path", str(predictions_file),
+             "--threshold", str(args.threshold),
+             "--points", "1" if args.atp == "Wait" else "0",
+-            "--policy", args.policy,
+             "--max_judge_steps", str(args.max_judge_steps),
+             "--seed", str(args.seed),
+             "--temperature", str(args.temperature),
+             "--top_p", str(args.top_p),
+             "--max_generated_tokens", str(args.max_generated_tokens),
+         ]
++        if args.policy != "auto":
++            cmd.extend(["--policy", args.policy])
+         if args.enable_repetition_exit:
+             cmd.extend(["--rep", "1"])
++        if args.dump_checks:
++            cmd.append("--dump_checks")
+ 
+         if run_command(cmd, "Step 2/3: Running DEER inference") != 0:
+             sys.exit(1)
+diff --git a/baselines/utils/generation_config.py b/baselines/utils/generation_config.py
+index 80d13c3..16bbc3d 100644
+--- a/baselines/utils/generation_config.py
++++ b/baselines/utils/generation_config.py
+@@ -17,6 +17,8 @@ def load_generation_params(model_name: str) -> dict:
+         temperature = getattr(gc, "temperature", 0.6)
+         top_p = getattr(gc, "top_p", 0.95)
+         top_k = getattr(gc, "top_k", -1)  # -1 = disabled in vLLM
++        if top_k is None:
++            top_k = -1
+     except Exception as e:
+         print(f"[generation_config] Failed to load from {model_name}: {e}")
+         print("[generation_config] Using defaults: temperature=0.6, top_p=0.95, top_k=-1")
+@@ -24,6 +26,9 @@ def load_generation_params(model_name: str) -> dict:
+         top_p = 0.95
+         top_k = -1
+ 
++    if top_k is None:
++        top_k = -1
++
+     params = {"temperature": temperature, "top_p": top_p, "top_k": top_k}
+     print(f"[generation_config] {model_name.split('/')[-1]}: "
+           f"temperature={temperature}, top_p={top_p}, top_k={top_k}")
+diff --git a/configs/DS-7B.conf b/configs/DS-7B.conf
+index 85d6da0..cb39c4d 100644
+--- a/configs/DS-7B.conf
++++ b/configs/DS-7B.conf
+@@ -18,7 +18,8 @@ MIN_STOP_STEP=10           # Minimum step before allowing early stop
+ # Embedding-based Filtering Parameters (Problem 1: Reduce trial answer frequency)
+ # -----------------------------------------------------------------------------
+ ENABLE_EMBEDDING_FILTER="true"  # Set to "true" to enable, "" to disable
+-EMBEDDING_MODEL="ZhishanQ/qwen3-embedding-redundancy-detector-0.6B"
++# Local mirror (avoid HF download). Upstream id: ZhishanQ/qwen3-embedding-redundancy-detector-0.6B
++EMBEDDING_MODEL="/mnt/d/lsj/models/qwen3-embedding-redundancy-detector-0.6B"
+ SIMILARITY_THRESHOLD=0.35       # τ_sim: similarity threshold for flagging
+ CONSECUTIVE_REDUNDANCY_STOP=1   # m: stop when m consecutive redundant steps (0=disabled)
+ CONSECUTIVE_REDUNDANCY_MIN_STEP=50  # Only start detecting consecutive redundancy after this step
+diff --git a/puma/gen_prefixed_answers.py b/puma/gen_prefixed_answers.py
+index 8955579..f10e520 100644
+--- a/puma/gen_prefixed_answers.py
++++ b/puma/gen_prefixed_answers.py
+@@ -210,9 +210,18 @@ def process_questions_with_prefixes(
+         "model": model_name,
+         "trust_remote_code": True,
+         "tensor_parallel_size": tensor_parallel_size,
+-        "max_model_len": 38000,
+-        "gpu_memory_utilization": 0.78,
++        "max_model_len": int(os.environ.get("VLLM_MAX_MODEL_LEN", "38000")),
++        "gpu_memory_utilization": float(
++            os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.78")
++        ),
+     }
++    # L40 / Ada: custom all-reduce dies in CUDA-graph profiling under TP>1
++    # (same guard as run_vllm.py).
++    if tensor_parallel_size > 1 or os.environ.get(
++        "VLLM_DISABLE_CUSTOM_ALL_REDUCE", ""
++    ).lower() in ("1", "true", "yes"):
++        llm_kwargs["disable_custom_all_reduce"] = True
++        logger.info("disable_custom_all_reduce=True (TP>1 or env)")
+     if seed is not None:
+         llm_kwargs["seed"] = seed
+     llm = LLM(**llm_kwargs)
+@@ -225,6 +234,9 @@ def process_questions_with_prefixes(
+         temperature = getattr(gen_config, "temperature", 0.6)
+         top_p = getattr(gen_config, "top_p", 0.95)
+         top_k = getattr(gen_config, "top_k", -1)
++        # Newer HF GenerationConfig may set top_k=None; vLLM requires int (>= -1).
++        if top_k is None:
++            top_k = -1
+         logger.info(f"Loaded generation_config: temperature={temperature}, top_p={top_p}, top_k={top_k}")
+     except Exception as e:
+         logger.info(f"Failed to load generation_config: {e}")
+@@ -361,6 +373,9 @@ def process_questions_with_prefixes(
+         top_k = -1
+         logger.info(f"Code greedy guided mode: temperature=0, greedy decoding + format guide")
+ 
++    if top_k is None:
++        top_k = -1
++
+     logger.info(f"Total prompts to generate: {len(prompts)}")
+     logger.info(f"Sampling params: temperature={temperature}, top_p={top_p}, top_k={top_k}")
+ 
+diff --git a/puma/gen_trial_answers.py b/puma/gen_trial_answers.py
+index cc85f0e..61b8619 100644
+--- a/puma/gen_trial_answers.py
++++ b/puma/gen_trial_answers.py
+@@ -2,6 +2,7 @@ import json
+ import math
+ import logging
+ import argparse
++import atexit
+ import sys
+ import os
+ from datetime import datetime
+@@ -10,6 +11,7 @@ from typing import List, Dict
+ from vllm import LLM, SamplingParams
+ from transformers import AutoTokenizer
+ from prompt_utils import build_base_prompt, get_task_type, get_confident_ending, extract_trial_code
++from vllm_shutdown import shutdown_llm
+ 
+ logger = logging.getLogger(__name__)
+ debug_logger = logging.getLogger(__name__ + ".debug")
+@@ -129,9 +131,11 @@ def build_prompt(
+     prompt_version: str = "default",
+     is_trial_answer: bool = True,
+     dataset: str = "",
++    confident_ending: str = None,
+ ) -> str:
+     """Build the vLLM prompt with chat template, instruction, and reasoning prefix."""
+-    confident_ending = get_confident_ending(dataset, is_trial=is_trial_answer)
++    if confident_ending is None:
++        confident_ending = get_confident_ending(dataset, is_trial=is_trial_answer)
+     base_prompt = build_base_prompt(tokenizer, model_name, question, task_type, prompt_version, is_trial=is_trial_answer)
+     if reasoning_prefix.strip():
+         if is_trial_answer:
+@@ -247,6 +251,98 @@ def extract_logprob_from_step(step):
+             return 0.0
+ 
+ 
++def _step_logprob_values(step) -> List[float]:
++    """All available logprobs at one generation step (chosen + top-K)."""
++    if isinstance(step, float):
++        return [step]
++    if not isinstance(step, dict) or not step:
++        try:
++            return [float(step)]
++        except Exception:
++            return [0.0]
++    out = []
++    for val in step.values():
++        if hasattr(val, "logprob"):
++            out.append(float(val.logprob))
++        else:
++            try:
++                out.append(float(val))
++            except Exception:
++                continue
++    return out or [0.0]
++
++
++def compute_answer_token_uncertainty(logprobs_steps, start_idx: int, end_idx: int) -> Dict:
++    """Per-answer-token uncertainty from vLLM top-K logprobs.
++
++    Entropy is renormalized over the returned top-K (approximation when K << |V|).
++    Margin is top1_logprob - top2_logprob among returned candidates.
++
++    Aggregates:
++      U_tail = 90th percentile of token entropies (high = uncertain)
++      M_tail = 10th percentile of token margins (low = uncertain)
++    """
++    ents: List[float] = []
++    margins: List[float] = []
++    top1_probs: List[float] = []
++    if start_idx >= end_idx or not logprobs_steps:
++        return {
++            "answer_token_entropies": ents,
++            "answer_token_margins": margins,
++            "answer_token_top1_probs": top1_probs,
++            "U_tail": None,
++            "M_tail": None,
++            "mean_entropy": None,
++            "min_margin": None,
++        }
++
++    lo = max(0, start_idx)
++    hi = min(end_idx, len(logprobs_steps))
++    for pos in range(lo, hi):
++        lps = sorted(_step_logprob_values(logprobs_steps[pos]), reverse=True)
++        if not lps:
++            continue
++        max_lp = lps[0]
++        exps = [math.exp(lp - max_lp) for lp in lps]
++        Z = sum(exps) or 1.0
++        ps = [e / Z for e in exps]
++        H = -sum(p * math.log(max(p, 1e-12)) for p in ps)
++        margin = (lps[0] - lps[1]) if len(lps) >= 2 else 0.0
++        ents.append(float(H))
++        margins.append(float(margin))
++        top1_probs.append(float(math.exp(lps[0])))
++
++    if not ents:
++        return {
++            "answer_token_entropies": ents,
++            "answer_token_margins": margins,
++            "answer_token_top1_probs": top1_probs,
++            "U_tail": None,
++            "M_tail": None,
++            "mean_entropy": None,
++            "min_margin": None,
++        }
++
++    ents_s = sorted(ents)
++    margins_s = sorted(margins)
++    # nearest-rank percentiles
++    def pct(arr: List[float], q: float) -> float:
++        if len(arr) == 1:
++            return arr[0]
++        idx = min(len(arr) - 1, max(0, int(math.ceil(q * len(arr)) - 1)))
++        return arr[idx]
++
++    return {
++        "answer_token_entropies": ents,
++        "answer_token_margins": margins,
++        "answer_token_top1_probs": top1_probs,
++        "U_tail": float(pct(ents_s, 0.90)),
++        "M_tail": float(pct(margins_s, 0.10)),
++        "mean_entropy": float(sum(ents) / len(ents)),
++        "min_margin": float(min(margins)),
++    }
++
++
+ def process_questions_with_prefixes_vllm(
+     questions_data: List[Dict],
+     model_name: str,
+@@ -265,6 +361,8 @@ def process_questions_with_prefixes_vllm(
+     confidence_mode: str = "token_in_boxed",
+     confidence_aggregation: str = "geometric",
+     gpqa_softmax_temperature: float = None,
++    confident_ending: str = None,
++    answer_logprobs_k: int = 1,
+ ) -> List[Dict]:
+     """
+     Batch-run vLLM on all question + prefix combinations.
+@@ -278,6 +376,10 @@ def process_questions_with_prefixes_vllm(
+         - greedy: temperature=0.0 (deterministic)
+         - sampling: uses temperature/top_p/top_k as provided
+         - default: no explicit temperature/top_p/top_k (vLLM SamplingParams defaults)
++
++    answer_logprobs_k: vLLM top-K logprobs per generated token. Use ≥2 for
++        answer-token margin; ≥10 recommended for top-K entropy approximation.
++        Does not change the legacy `confidence` scalar formula.
+     """
+     logger.info(f"Loading vLLM model {model_name}")
+     # Build LLM kwargs - logprobs_mode is an engine argument for vLLM >= 0.10.x
+@@ -285,14 +387,24 @@ def process_questions_with_prefixes_vllm(
+         "model": model_name,
+         "trust_remote_code": True,
+         "tensor_parallel_size": tensor_parallel_size,
+-        "max_model_len": 38000,
+-        "gpu_memory_utilization": 0.78,
++        "max_model_len": int(os.environ.get("VLLM_MAX_MODEL_LEN", "38000")),
++        "gpu_memory_utilization": float(
++            os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.78")
++        ),
+     }
++    # L40 / Ada: custom all-reduce dies in CUDA-graph profiling under TP>1
++    # (same guard as run_vllm.py).
++    if tensor_parallel_size > 1 or os.environ.get(
++        "VLLM_DISABLE_CUSTOM_ALL_REDUCE", ""
++    ).lower() in ("1", "true", "yes"):
++        llm_kwargs["disable_custom_all_reduce"] = True
++        logger.info("disable_custom_all_reduce=True (TP>1 or env)")
+     if logprobs_mode:
+         llm_kwargs["logprobs_mode"] = logprobs_mode
+     if seed is not None:
+         llm_kwargs["seed"] = seed
+     llm = LLM(**llm_kwargs)
++    atexit.register(shutdown_llm, llm)
+     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+     task_type = get_task_type(dataset)
+ 
+@@ -356,18 +468,21 @@ def process_questions_with_prefixes_vllm(
+         prompt = build_prompt(
+             tokenizer, model_name, info["question"], info["reasoning_prefix"],
+             task_type, prompt_version, is_trial_answer=True, dataset=dataset,
++            confident_ending=confident_ending,
+         )
+         prompts.append(prompt)
+         meta.append(info)
+ 
+-    # GPQA needs top-5 logprobs to extract A/B/C/D probabilities
+-    n_logprobs = 5 if task_type == "gpqa" else 1
++    # GPQA needs top-5 logprobs to extract A/B/C/D probabilities; answer
++    # uncertainty may request a larger K for top-K entropy / margin.
++    n_logprobs = max(int(answer_logprobs_k), 5 if task_type == "gpqa" else 1)
+ 
+     logger.info(f"Total prompts to generate: {len(prompts)}")
+     logger.info(f"Trial decoding mode: {trial_decoding}")
+     logger.info(f"Confidence mode: {confidence_mode}")
+-    if n_logprobs > 1:
+-        logger.info(f"GPQA mode: logprobs={n_logprobs}, softmax_temperature={gpqa_softmax_temperature}")
++    logger.info(f"answer_logprobs_k={answer_logprobs_k} → vLLM logprobs={n_logprobs}")
++    if task_type == "gpqa" and gpqa_softmax_temperature:
++        logger.info(f"GPQA mode: softmax_temperature={gpqa_softmax_temperature}")
+ 
+     if trial_decoding == "greedy":
+         sampling_params = SamplingParams(
+@@ -405,7 +520,9 @@ def process_questions_with_prefixes_vllm(
+ 
+     logger.info(f"Submitting all {len(prompts)} prompts to vLLM (continuous batching)...")
+     all_outputs = llm.generate(prompts, sampling_params)
+-    logger.info(f"vLLM generation complete, processing results...")
++    logger.info("vLLM generation complete, releasing engine before CPU postprocess")
++    shutdown_llm(llm)
++    logger.info("vLLM generation complete, processing results...")
+ 
+     for out, info in zip(all_outputs, meta):
+         gen = out.outputs[0]
+@@ -413,12 +530,14 @@ def process_questions_with_prefixes_vllm(
+         token_ids = gen.token_ids
+         token_logprobs = [extract_logprob_from_step(step) for step in gen.logprobs] if gen.logprobs else []
+ 
++        start_idx, end_idx = 0, len(token_logprobs)
+         if task_type == "code":
+             # Code tasks: model output is already inside ```python block,
+             # extract code until ``` or end of text
+             answer = extract_trial_code(text)
+             # Use all generated token logprobs for confidence
+             answer_token_logprobs = token_logprobs
++            start_idx, end_idx = 0, len(token_logprobs)
+             debug_logger.info(f"[code] extracted trial code ({len(answer)} chars)")
+         elif confidence_mode == "token_in_boxed":
+             # DEER-style: only tokens inside {answer}, skip braces
+@@ -430,6 +549,7 @@ def process_questions_with_prefixes_vllm(
+             else:
+                 # Fallback to first_line if no braces found
+                 answer_token_logprobs = token_logprobs
++                start_idx, end_idx = 0, len(token_logprobs)
+             debug_logger.info(f"[token_in_boxed] boxed_content='{boxed_content}', span=[{start_idx}:{end_idx}]")
+         else:
+             # first_line: parse_response (text before '.\n')
+@@ -438,8 +558,10 @@ def process_questions_with_prefixes_vllm(
+                 answer_ids = tokenizer(answer, add_special_tokens=False).input_ids
+                 answer_len = len(answer_ids)
+                 answer_token_logprobs = token_logprobs[:answer_len]
++                start_idx, end_idx = 0, answer_len
+             else:
+                 answer_token_logprobs = token_logprobs
++                start_idx, end_idx = 0, len(token_logprobs)
+ 
+         debug_logger.info(f"Trial Answer Result: {answer}")
+         debug_logger.info(f"Full token logprobs of all trial answer: {token_logprobs}")
+@@ -469,6 +591,10 @@ def process_questions_with_prefixes_vllm(
+         debug_logger.info(f"Confidence with token logprobs of all trial answer: {all_geo_conf}")
+         debug_logger.info(f"Confidence with token logprobs of only answer: {geo_conf}")
+ 
++        unc = {}
++        if n_logprobs >= 2 and gen.logprobs is not None:
++            unc = compute_answer_token_uncertainty(gen.logprobs, start_idx, end_idx)
++
+         result = {
+             "question_idx": info["question_idx"],
+             "stopped_len": info["stopped_len"],
+@@ -486,6 +612,9 @@ def process_questions_with_prefixes_vllm(
+             "new_thinking": "<think>" in text,
+             "success": True,
+         }
++        if unc:
++            result.update(unc)
++            result["answer_logprobs_k"] = n_logprobs
+ 
+         results.append(result)
+ 
+@@ -626,6 +755,21 @@ def main():
+              "over A/B/C/D logprobs instead of raw token probability. "
+              "Only affects GPQA datasets with token_in_boxed confidence mode.",
+     )
++    parser.add_argument(
++        "--confident-ending",
++        type=str,
++        default=None,
++        help="Override trial inducing suffix (default: PUMA get_confident_ending). "
++             "Use DEER/DEER-Pro strings for paper-aligned offline trials.",
++    )
++    parser.add_argument(
++        "--answer-logprobs-k",
++        type=int,
++        default=1,
++        help="Top-K logprobs per generated token for answer-token uncertainty "
++             "(entropy approx / top1-top2 margin). Default 1 keeps legacy JSON. "
++             "Use 20 for U_tail/M_tail gates. Does not change `confidence`.",
++    )
+ 
+     args = parser.parse_args()
+ 
+@@ -680,6 +824,8 @@ def main():
+         confidence_mode=args.confidence_mode,
+         confidence_aggregation=args.confidence_aggregation,
+         gpqa_softmax_temperature=args.gpqa_softmax_temperature,
++        confident_ending=args.confident_ending,
++        answer_logprobs_k=args.answer_logprobs_k,
+     )
+ 
+     save_results(results, args.output_file)
+diff --git a/puma/prompt_utils.py b/puma/prompt_utils.py
+index 248cee9..b047bdd 100644
+--- a/puma/prompt_utils.py
++++ b/puma/prompt_utils.py
+@@ -75,7 +75,17 @@ INSTRUCTION_DEER = "Please reason step by step, and put your final answer within
+ # Task type and model type detection
+ # =============================================================================
+ 
+-MATH_DATASETS = {"aime24", "aime25", "amc23", "gsm8k", "math-500", "olympiadbench"}
++MATH_DATASETS = {
++    "aime24",
++    "aime25",
++    "aime26",
++    "amc23",
++    "brumo25",
++    "gsm8k",
++    "hmmt25",
++    "math-500",
++    "olympiadbench",
++}
+ CODE_DATASETS = {"livecodebench"}
+ 
+ 
+diff --git a/puma/run_vllm.py b/puma/run_vllm.py
+index dc41c0b..20d8de4 100644
+--- a/puma/run_vllm.py
++++ b/puma/run_vllm.py
+@@ -166,7 +166,7 @@ def parse_args():
+     parser.add_argument("--output_path", type=str, required=True)
+     parser.add_argument("--limit", type=int, default=-1)
+     parser.add_argument("--max_tokens", type=int, default=32768)
+-    parser.add_argument("--answer_max_tokens", type=int, default=4096,
++    parser.add_argument("--answer_max_tokens", type=int, default=2048,
+                         help="Max tokens for answer regeneration when thinking is truncated")
+     parser.add_argument("--use_raw_prompt", action="store_true",
+                         help="Use raw prompt without chat template (legacy mode)")
+@@ -179,6 +179,12 @@ def parse_args():
+                         help="Override top_p (default: from model's generation_config)")
+     parser.add_argument("--seed", type=int, default=None,
+                         help="Random seed for vLLM engine (default: None)")
++    parser.add_argument(
++        "--max_model_len",
++        type=int,
++        default=None,
++        help="Override vLLM max_model_len (default: max_tokens + 3072 + answer_max_tokens)",
++    )
+     return parser.parse_args()
+ 
+ 
+@@ -200,14 +206,29 @@ def main():
+     model_type = get_model_type(model_name)
+     print(f"Detected model type: {model_type}")
+ 
+-    # max_model_len needs to accommodate fix prompts for truncated thinking:
+-    # fix prompt = chat_template(~200) + thinking(~max_tokens) + "</think>\n\n" + answer_max_tokens
+-    max_model_len = args.max_tokens + 1024 + args.answer_max_tokens
++    # Accommodate the longest audited benchmark prompts plus a truncated-thought
++    # answer fix.  The shared puma-fullcot-32k-v2 protocol reserves 3072 prompt
++    # tokens (observed maximum: 2774), rather than the historical 1024.
++    max_model_len = args.max_tokens + 3072 + args.answer_max_tokens
++    if args.max_model_len is not None:
++        max_model_len = args.max_model_len
+ 
+     seed_kwargs = {"seed": args.seed} if args.seed is not None else {}
+     if args.seed is not None:
+         print(f"Using seed: {args.seed}")
+ 
++    # TP>1: custom all-reduce + FULL CUDA graphs can fail on some drivers
++    # ("Cuda error custom_all_reduce.cuh ... invalid argument"). Opt-out via env.
++    extra_kwargs = {}
++    if os.environ.get("VLLM_DISABLE_CUSTOM_ALL_REDUCE", "").lower() in ("1", "true", "yes") \
++            or (tp_size > 1 and os.environ.get("VLLM_DISABLE_CUSTOM_ALL_REDUCE", "auto") == "auto"):
++        extra_kwargs["disable_custom_all_reduce"] = True
++        print("disable_custom_all_reduce=True (TP>1 auto or env)")
++    if os.environ.get("VLLM_ENFORCE_EAGER", "").lower() in ("1", "true", "yes"):
++        extra_kwargs["enforce_eager"] = True
++        print("enforce_eager=True (env)")
++    gpu_mem = float(os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.85"))
++
+     if "70B" not in model_name:
+         llm = LLM(
+             model=model_name,
+@@ -215,8 +236,9 @@ def main():
+             tensor_parallel_size=tp_size,
+             dtype="auto",
+             max_model_len=max_model_len,
+-            gpu_memory_utilization=0.85,  # Avoid OOM on long sequences (e.g. math-500)
++            gpu_memory_utilization=gpu_mem,
+             **seed_kwargs,
++            **extra_kwargs,
+         )
+     else:
+         llm = LLM(
+@@ -227,6 +249,7 @@ def main():
+             max_model_len=8192,
+             max_num_seqs=35,
+             **seed_kwargs,
++            **extra_kwargs,
+         )
+         print("Using 70B model")
+         print("Using max_num_seqs=35, max_model_len=8192")
+@@ -244,6 +267,9 @@ def main():
+         temperature = getattr(gen_config, "temperature", 0.6)
+         top_p = getattr(gen_config, "top_p", 0.95)
+         top_k = getattr(gen_config, "top_k", -1)  # -1 means disabled in vLLM
++        # Newer HF GenerationConfig may set top_k=None; vLLM requires int (>= -1).
++        if top_k is None:
++            top_k = -1
+         print(f"Loaded generation_config: temperature={temperature}, top_p={top_p}, top_k={top_k}")
+     except Exception as e:
+         print(f"Failed to load generation_config: {e}")
+@@ -260,6 +286,9 @@ def main():
+         top_p = args.top_p
+         print(f"CLI override: top_p={top_p}")
+ 
++    if top_k is None:
++        top_k = -1
++
+     sampling_params = SamplingParams(
+         temperature=temperature,
+         max_tokens=args.max_tokens,
+diff --git a/run_pipeline.sh b/run_pipeline.sh
+index 53e27e2..0db8b0c 100755
+--- a/run_pipeline.sh
++++ b/run_pipeline.sh
+@@ -131,8 +131,13 @@ echo ">>> Step 1b: separating reasoning steps"
+ CURRENT_STEPS="$STEPS"
+ TRIAL_ARGS=""
+ if [ "$ENABLE_EMBEDDING_FILTER" = "true" ]; then
++    if [ -f "$FILTERED" ]; then
++        echo ">>> Step 1.5: skipped (filtered_steps.json already exists)"
++        CURRENT_STEPS="$FILTERED"
++        TRIAL_ARGS="--respect-embedding-filter"
++    else
+     echo ">>> Step 1.5: redundancy-detector filtering"
+-    "$PY" puma/embed_and_filter_steps.py \
++    if ! "$PY" puma/embed_and_filter_steps.py \
+         --input-file "$STEPS" \
+         --output-file "$FILTERED" \
+         --embedding-model "$EMBEDDING_MODEL" \
+@@ -142,9 +147,18 @@ if [ "$ENABLE_EMBEDDING_FILTER" = "true" ]; then
+         --trigger-mode "$TRIGGER_MODE" \
+         --consecutive-redundancy-stop "$CONSECUTIVE_REDUNDANCY_STOP" \
+         --consecutive-redundancy-min-step "$CONSECUTIVE_REDUNDANCY_MIN_STEP" \
+-        --loop-breaker-similarity-threshold "$LOOP_BREAKER_SIMILARITY_THRESHOLD"
++        --loop-breaker-similarity-threshold "$LOOP_BREAKER_SIMILARITY_THRESHOLD"; then
++        # vLLM may abort during EngineCore teardown after the atomic filtered
++        # artifact was fully written.  Preserve that completed artifact rather
++        # than discarding a valid PUMA preprocessing result.
++        if [[ ! -s "$FILTERED" ]]; then
++            exit 1
++        fi
++        echo "WARNING: embedding worker exited nonzero after writing $FILTERED; continuing"
++    fi
+     CURRENT_STEPS="$FILTERED"
+     TRIAL_ARGS="--respect-embedding-filter"
++    fi
+ else
+     echo ">>> Step 1.5: skipped (embedding filter disabled)"
+ fi
+diff --git a/baselines/deer/canonical_protocol.py b/baselines/deer/canonical_protocol.py
+new file mode 100644
+index 0000000..82c866d
+--- /dev/null
++++ b/baselines/deer/canonical_protocol.py
+@@ -0,0 +1,62 @@
++"""Pure helpers for DEER under the canonical Full-CoT host protocol."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++PROTOCOL_ID = "puma-fullcot-32k-v2"
++FULLCOT_GENERATION_TOKENS = 32768
++PROMPT_RESERVE_TOKENS = 3072
++TRUNCATED_ANSWER_FIX_TOKENS = 2048
++CANONICAL_MAX_MODEL_LEN = 37888
++
++
++@dataclass(frozen=True, slots=True)
++class DeerFamilyPolicy:
++    name: str
++    think_ratio: float
++    confidence_policy: str
++    require_probe_think_close: bool
++
++
++def policy_for_model(model_name: str) -> DeerFamilyPolicy:
++    """Return DEER's model-family-specific internal control policy."""
++
++    model_lower = model_name.lower()
++    if "qwen3" in model_lower:
++        return DeerFamilyPolicy(
++            name="qwen3",
++            think_ratio=0.8,
++            confidence_policy="avg2",
++            require_probe_think_close=True,
++        )
++    return DeerFamilyPolicy(
++        name="standard",
++        think_ratio=0.6,
++        confidence_policy="avg1",
++        require_probe_think_close=False,
++    )
++
++
++def probe_gate_passed(
++    policy: DeerFamilyPolicy,
++    *,
++    probe_think_closed: bool,
++) -> bool:
++    return not policy.require_probe_think_close or probe_think_closed
++
++
++def answer_budget(
++    *,
++    delivered_thinking_tokens: int,
++    host_answer_fix: bool,
++    context_room: int,
++) -> tuple[int, int]:
++    """Return (requested, usable) answer tokens for one DEER delivery."""
++
++    requested = (
++        TRUNCATED_ANSWER_FIX_TOKENS
++        if host_answer_fix
++        else max(0, FULLCOT_GENERATION_TOKENS - delivered_thinking_tokens)
++    )
++    return requested, max(0, min(requested, context_room))
+diff --git a/puma/vllm_shutdown.py b/puma/vllm_shutdown.py
+new file mode 100644
+index 0000000..ea465b1
+--- /dev/null
++++ b/puma/vllm_shutdown.py
+@@ -0,0 +1,25 @@
++"""Release a vLLM engine before CPU-only postprocess."""
++
++from __future__ import annotations
++
++import logging
++from typing import Any
++
++logger = logging.getLogger(__name__)
++
++
++def shutdown_llm(llm: Any) -> None:
++    """Drop the vLLM engine. Safe to call twice or on a dummy object."""
++    if llm is None or getattr(llm, "_trial_shutdown_done", False):
++        return
++    engine = getattr(llm, "llm_engine", None)
++    client = getattr(engine, "engine_core", None)
++    shutdown = getattr(client, "shutdown", None)
++    if not callable(shutdown):
++        return
++    llm._trial_shutdown_done = True
++    logger.info("Shutting down vLLM engine to release GPU before CPU postprocess")
++    try:
++        shutdown(timeout=10)
++    except Exception:
++        logger.exception("vLLM shutdown failed")
+diff --git a/data/aime26_test.jsonl b/data/aime26_test.jsonl
+new file mode 100644
+index 0000000..66ceb11
+--- /dev/null
++++ b/data/aime26_test.jsonl
+@@ -0,0 +1,30 @@
++{"question": "Patrick started walking at a constant rate along a straight road from school to the park. One hour after Patrick left, Tanya started running along the same road from school to the park. One hour after Tanya left, Jose started bicycling along the same road from school to the park. Tanya ran at a constant rate of $2$ miles per hour faster than Patrick walked, Jose bicycled at a constant rate of $7$ miles per hour faster than Tanya ran, and all three arrived at the park at the same time. The distance from the school to the park is $\\frac{m}{n}$ miles, where $m$ and $n$ are relatively prime positive integers. Find $m + n$.", "answer": "277"}
++{"question": "Find the number of positive integer palindromes written in base $10$ with no zero digits, and whose digits add up to $13$. For example, $42124$ has these properties. Recall that a palindrome is a number whose representation reads the same from left to right as from right to left.", "answer": "62"}
++{"question": "A hemisphere with radius $200$ sits on top of a horizontal circular disk with radius $200,$ and the hemisphere and disk have the same center. Let $\\mathcal T$ be the region of points P in the disk such that a sphere of radius $42$ can be placed on top of the disk at $P$ and lie completely inside the hemisphere. The area of $\\mathcal T$ divided by the area of the disk is $\\tfrac pq,$ where $p$ and $q$ are relatively prime positive integers. Find $p+q.$", "answer": "79"}
++{"question": "Find the number of integers less than or equal to 100 that are equal to $a+b+ab$ for some choice of distinct positive integers a and b.", "answer": "70"}
++{"question": "A plane contains points $A$ and $B$ with $AB = 1$. Point $A$ is rotated in the plane counterclockwise through an acute angle $\\theta$ around point $B$ to point $A^\\prime$. Then $B$ is rotated in the plane clockwise through angle $\\theta$ around point $A^\\prime$ to point $B^\\prime$. Suppose that $AB^\\prime = \\frac{4}{3}$. The value of $\\cos \\theta$ can be written as $\\frac{m}{n}$ , where $m$ and $n$ are relatively prime positive integers. Find $m + n$.", "answer": "65"}
++{"question": "A real number $x$ satisfies $\\sqrt[20]{x^{\\log_{2026}x}}=26x$. What is the number of positive divisors of the product of all possible positive values of $x$?", "answer": "441"}
++{"question": "Find the number of functions $\\pi$ mapping the set $A =\\{1,2,3,4,5,6\\}$ onto $A$ such that for every $a \\in A,$\n\\[\n\\pi(\\pi(\\pi(\\pi(\\pi(\\pi(a)))))) = a.\n\\]", "answer": "396"}
++{"question": "Let $N$ be the number of positive integer divisors of $17017^{17}$ that leave a remainder of $5$ when divided by $12$. Find the remainder when $N$ is divided by $1000$.", "answer": "244"}
++{"question": "Joanne has a blank fair six-sided die and six stickers each displaying a different integer from 1 to 6. Joanne rolls the die and then places the sticker labeled 1 on the top face of the die. She then rolls the die again, places the sticker labeled 2 on the top face, and continues this process to place the rest of the stickers in order. If the die ever lands with a sticker already on its top face, the new sticker is placed to cover the old sticker. Let $p$ be the conditional probability that at the end of the process exactly one face has been left blank, given that all the even-numbered stickers are visible on faces of the die. Then $p$ can be written as $\\tfrac mn,$ where $m$ and $n$ are relatively prime positive integers. Find $m + n.$", "answer": "29"}
++{"question": "Let $\\triangle ABC$ have side lengths $AB = 13, BC = 14,$ and $CA = 15.$ Triangle $\\triangle A'B'C'$ is obtained by rotating $\\triangle ABC$ about its circumcenter so that ${}\\overline{AC}$ is perpendicular $\\overline{BC},$ with $A'$ and $B$ not on the same side of line $B'C'.$ Find the integer closest to the area of hexagon $AA'CC'BB'.$", "answer": "156"}
++{"question": "The integers from $1$ to $64$ are placed in some order into an $8 \\times 8$ grid of cells with one number in each cell. Let $a_{i,j}$ be the number placed in the cell in row $i$ and column $j,$ and let $M$ be the sum of the absolute differences between adjacent cells. That is,\n\\[\nM = \\sum^8_{i=1} \\sum^7_{j=1} (|a_{i,j+1} - a_{i,j}| + |a_{j+1,i} - a_{j,i}|).\n\\]\nFind the remainder when the maximum possible value of $M$ is divided by $1000.$", "answer": "896"}
++{"question": "Triangle $\\triangle ABC$ lies in plane $\\mathcal P$ with $AB = 6, AC = 4,$ and $\\angle BAC = 90^\\circ.$ Let $D$ be the reflection across $\\overline{BC}$ of the centroid of $\\triangle ABC. {}$ Four spheres, all on the same side of $\\mathcal P,$ have radii $1, 2, 3,$ and $r$ and are tangent to $\\mathcal P$ at points $A, B, C,$ and $D,$ respectively. The four spheres are also each tangent to a second plane $\\mathcal T$ and are all on the same side of $\\mathcal T.$ The value of $r$ can be written as $\\tfrac mn,$ where $m$ and $n$ are relatively prime positive integers. Find $m+n.$", "answer": "161"}
++{"question": "For each positive integer $r$ less than $502,$ define\n\\[\nS_r=\\sum_{m\\ge 0}\\dbinom{10000}{502n+r},\n\\]\nwhere $\\binom{10000}{n}$ is defined to be $0$ when $n>10000.$ That is, $S_r$ is the sum of all binomial coefficients of the form $\\binom{10000}{k}$ for which $0\\le k\\le 10000$ and $k-r$ is a multiple of $502.$ Find the number of integers in the list $S_0,S_1,\\dots,S_{501}$ that are multiples of the prime number $503.$", "answer": "39"}
++{"question": "In an equiangular pentagon, the sum of the squares of the side lengths equals $308,$ and the sum of the squares of the diagonal lengths equals $800.$ The square of the perimeter of the pentagon can be expressed as $m \\sqrt n,$ where $m$ and $n$ are positive integers and $n$ is not divisible by the square of any prime. Find $m + n.$", "answer": "681"}
++{"question": "Let $a, b,$ and $n$ be positive integers with both $a$ and $b$ greater than or equal to $2$ and less than or equal to $2n$. Define an $a \\times b$ cell loop in a $2n \\times 2n$ grid of cells to be the $2a + 2b - 4$ cells that surround an $(a - 2) \\times (b - 2)$ (possibly empty) rectangle of cells in the grid. For example, the following diagram shows a way to partition a $6 \\times 6$ grid of cells into $4$ cell loops.\n\n| P   P P   P | Y   Y |\n| P | R R | P | Y | Y |\n| P | R R | P | Y | Y |\n| P   P P   P | Y | Y |\n| G   G G   G | Y | Y |\n| G   G G   G | Y   Y |\n\nFind the number of ways to partition a $10 \\times 10$ grid of cells into $5$ cell loops so that every cell of the grid belongs to exactly one cell loop.", "answer": "83"}
++{"question": "Find the sum of the $10$th terms of all arithmetic sequences of integers that have first term equal to $4$ and include both $24$ and $34$ as terms.", "answer": "178"}
++{"question": "The figure below shows a grid of $10$ squares in a row. Each square has a diagonal connecting its lower left vertex to its upper right vertex. A bug moves along the line segments from vertex to vertex, never traversing the same segment twice and never moving from right to left along a horizontal or diagonal segment. Let $N$ be the number of paths the bug can take from the lower left corner ($A$) to the upper right corner ($B$). One such path from $A$ to $B$ is shown by the thick line segments in the figure. Find $\\sqrt{N}$.\n\n[asy]\nsize(12cm);\ndraw((0, 0)--(0, 1));\nfor (int i = 0; i <= 9; i += 1)\n{\ndraw((i, 1)--(i + 1, 1)--(i + 1, 0)--(i, 0)--(i + 1, 1));\n}\ndraw((0, 0)--(0, 1)--(2, 1)--(2, 0)--(3, 1)--(3, 0)--(4, 1)--(4, 0)--(5, 0)--(5, 1)--(6, 1)--(6, 0)--(7, 1)--(8, 1)--(8, 0)--(10, 0)--(10, 1), red + linewidth(2));\nlabel(\"$A$\", (0, 0), dir(180));\nlabel(\"$B$\", (10, 1), dir(0));\n[/asy]", "answer": "243"}
++{"question": "Let $ABCDE$ be a nonconvex pentagon with internal angles $\\angle A = \\angle E = 90^\\circ$ and $\\angle B = \\angle D = 45^\\circ.$ Suppose that $DE < AB, AE = 20, BC = 14\\sqrt2,$ and points $B,C,$ and $D$ lie on the same side of line $AE.$ Suppose further that $AB$ is an integer with $AB < 2026$ and the area of pentagon $ABCDE$ is an integer multiple of $16.$ Find the number of possible values of $AB.$", "answer": "503"}
++{"question": "For each positive integer $n$ let $f(n)$ be the value of the base-ten numeral $n$ viewed in base $b$, where $b$ is the least integer greater than the greatest digit in $n$. For example, if $n=72$, then $b=8$, and $72$ as a numeral in base $8$ equals $7\\cdot 8+2=58$; therefore $f(72)=58$. Find the number of positive integers $n$ less than $1000$ such that $f(n)=n$.", "answer": "279"}
++{"question": "An urn contains $n$ marbles. Each marble is either red or blue, and there are at least $7$ marbles of each color. When $7$ marbles are drawn randomly from the urn without replacement, the probability that exactly $4$ of them are red equals the probability that exactly $5$ of them are red. Find the sum of the five least values of $n$ for which this is possible.", "answer": "190"}
++{"question": "Find the sum of all real numbers $r$ such that there is at least one point where the circle with radius $r$ centered at $(4, 39)$ is tangent to the parabola with equation $2y = x^2 - 8x + 12.$", "answer": "50"}
++{"question": "A standard fair six-sided die is rolled repeatedly. Each time the die reads 1 or 2, Alice gets a coin; each time it reads 3 or 4, Bob gets a coin; and each time it reads 5 or 6, Carol gets a coin. The probability that Alice and Bob each receive at least two coins before Carol receives any coins can be written as $\\tfrac{m}{n},$ where $m$ and $n$ are relatively prime positive integers. Find $100m+n.$", "answer": "754"}
++{"question": "Isosceles triangle $\\triangle ABC$ has $AB = BC.$ Let $I$ be the incenter of $\\triangle ABC.$ The perimeters of $\\triangle ABC$ and $\\triangle AIC$ are in the ratio $125:6,$ and all the sides of both triangles have integer lengths. Find the minimum possible value of $AB.$", "answer": "245"}
++{"question": "Let $S$ denote the value of the infinite sum\n\\[\n\\frac{1}{9} + \\frac{1}{99} + \\frac{1}{999} + \\frac{1}{9999}  + \\cdots\n\\]\nFind the remainder when the greatest integer less than or equal to $10^{100} S$ is divided by $1000.$", "answer": "669"}
++{"question": "Let $\\triangle ABC$ be a triangle with $D$ on $\\overline{BC}$ such that $\\overline{AD}$ bisects $\\angle BAC.$ Let $\\omega$ be the circle that passes through $A$ and is tangent to segment $\\overline{BC}$ at $D.$ Let $E \\neq A$ and $F \\neq A$ be the intersections of $\\omega$ with segments $\\overline{AB}$ and $\\overline{AC},$ respectively. Suppose that $AB = 200, AC = 225,$ and all of $AE, AF, BD,$ and $CD$ are positive integers. Find the sum of all possible values of $BC.$", "answer": "850"}
++{"question": "Find the greatest integer $n$ such that the cubic polynomial\n\\[\nx^{3} - \\displaystyle\\frac{n}{6}x^{2} + (n - 11)x - 400\n\\]\nhas roots $\\alpha^{2}$, $\\beta^{2}$, and $\\gamma^{2}$, where $\\alpha$, $\\beta$, and $\\gamma$ are complex numbers, and there are exactly seven different possible values for $\\alpha + \\beta + \\gamma$.", "answer": "132"}
++{"question": "Consider a tetrahedron with two isosceles triangle faces with side lengths $5\\sqrt{10}, 5\\sqrt{10},$ and $10$ and two isosceles triangle faces with side lengths $5\\sqrt{10}, 5\\sqrt{10},$ and $18.$ The four vertices of the tetrahedron lie on a sphere with center $S,$ and the four faces of the tetrahedron are tangent to a sphere with center $R.$ The distance $RS$ can be written as $\\tfrac{m}{n},$ where $m$ and $n$ are relatively prime positive integers. Find $m + n.$", "answer": "223"}
++{"question": "Call finite sets of integers $S$ and $T$ cousins if\n- $S$ and $T$ have the same number of elements,\n- $S$ and $T$ are disjoint, and\n- the elements of $S$ can be paired with the elements of $T$ so that the elements in each pair differ by exactly $1$.\nFor example, $\\{1,2,5\\}$ and $\\{0,3,4\\}$ are cousins. Suppose that the set $S$ has exactly $4040$ cousins. Find the least number of elements the set $S$ can have.", "answer": "107"}
++{"question": "For integers $a$ and $b,$ let $a \\circ b = a - b$ if $a$ is odd and $b$ is even, and $a+b$ otherwise. Find the number of sequences $a_1, a_2, a_3, \\ldots, a_n$ of positive integers such that\n\\[\na_1 + a_2 + a_3 + \\cdots + a_n = 12 \\quad \\text{and} \\quad a_1 \\circ a_2 \\circ a_3 \\circ \\cdots \\circ a_n = 0\n\\]\nwhere the operations are performed from left to right; that is, $a_1 \\circ a_2 \\circ a_3$ means $(a_1 \\circ a_2) \\circ a_3.$", "answer": "157"}
++{"question": "Find the number of ordered 7-tuples $(a_1, a_2, a_3, \\ldots, a_7)$ having the following properties:\n- $a_k \\in \\{1,2,3\\}$ for all $k.$\n- $a_1+a_2+a_3+a_4+a_5+a_6+a_7$ is a multiple of $3.$\n- $a_1a_2 a_4 + a_2a_3a_5 + a_3a_4 a_6 + a_4 a_5 a_7 + a_5 a_6 a_1 + a_6 a_7 a_2 + a_7 a_1 a_3$ is a multiple of $3.$", "answer": "393"}
+diff --git a/data/amc23_test.jsonl b/data/amc23_test.jsonl
+new file mode 100644
+index 0000000..1af895d
+--- /dev/null
++++ b/data/amc23_test.jsonl
+@@ -0,0 +1,40 @@
++{"question": "Cities $A$ and $B$ are $45$ miles apart. Alicia lives in $A$ and Beth lives in $B$. Alicia bikes towards $B$ at 18 miles per hour. Leaving at the same time, Beth bikes toward $A$ at 12 miles per hour. How many miles from City $A$ will they be when they meet?", "answer": "27"}
++{"question": "Positive real numbers $x$ and $y$ satisfy $y^3=x^2$ and $(y-x)^2=4y^2$. What is $x+y$?", "answer": "36"}
++{"question": "What is the degree measure of the acute angle formed by lines with slopes $2$ and $\\frac{1}{3}$?", "answer": "45"}
++{"question": "What is the value of\n\\[2^3 - 1^3 + 4^3 - 3^3 + 6^3 - 5^3 + \\dots + 18^3 - 17^3?\\]", "answer": "3159"}
++{"question": "In a table tennis tournament every participant played every other participant exactly once. Although there were twice as many right-handed players as left-handed players, the number of games won by left-handed players was $40\\%$ more than the number of games won by right-handed players. (There were no ties and no ambidextrous players.) What is the total number of games played?", "answer": "36"}
++{"question": "How many complex numbers satisfy the equation $z^5=\\overline{z}$, where $\\overline{z}$ is the conjugate of the complex number $z$?", "answer": "7"}
++{"question": "Consider the set of complex numbers $z$ satisfying $|1+z+z^{2}|=4$. The maximum value of the imaginary part of $z$ can be written in the form $\\tfrac{\\sqrt{m}}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m+n$?", "answer": "21"}
++{"question": "Flora the frog starts at 0 on the number line and makes a sequence of jumps to the right. In any one jump, independent of previous jumps, Flora leaps a positive integer distance $m$ with probability $\\frac{1}{2^m}$.\nWhat is the probability that Flora will eventually land at 10? Write the answer as a simplified fraction $\\frac{m}{n}$, find $m+n$", "answer": "3"}
++{"question": "What is the product of all solutions to the equation\n\\[\\log_{7x}2023\\cdot \\log_{289x}2023=\\log_{2023x}2023\\]", "answer": "1"}
++{"question": "The weight of $\\frac{1}{3}$ of a large pizza together with $3 \\frac{1}{2}$ cups of orange slices is the same as the weight of $\\frac{3}{4}$ of a large pizza together with $\\frac{1}{2}$ cup of orange slices. A cup of orange slices weighs $\\frac{1}{4}$ of a pound. What is the weight, in pounds, of a large pizza? The answer can be written in the form $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m-n$?", "answer": "4"}
++{"question": "Rows 1, 2, 3, 4, and 5 of a triangular array of integers are shown below.\n1\n1 1\n1 3 1\n1 5 5 1\n1 7 11 7 1\nEach row after the first row is formed by placing a 1 at each end of the row, and each interior entry is 1 greater than the sum of the two numbers diagonally above it in the previous row. What is the units digits of the sum of the 2023 numbers in the 2023rd row?", "answer": "5"}
++{"question": "If $A$ and $B$ are vertices of a polyhedron, define the distance $d(A,B)$ to be the minimum number of edges of the polyhedron one must traverse in order to connect $A$ and $B$. For example, if $\\overline{AB}$ is an edge of the polyhedron, then $d(A, B) = 1$, but if $\\overline{AC}$ and $\\overline{CB}$ are edges and $\\overline{AB}$ is not an edge, then $d(A, B) = 2$. Let $Q$, $R$, and $S$ be randomly chosen distinct vertices of a regular icosahedron (regular polyhedron made up of 20 equilateral triangles). Find the probability that $d(Q, R) > d(R, S)$. The final answer can be written in the form $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m+n$?", "answer": "29"}
++{"question": "Let $f$ be the unique function defined on the positive integers such that \\[\\sum_{d\\mid n}d\\cdot f\\left(\\frac{n}{d}\\right)=1\\] for all positive integers $n$. What is $f(2023)$?", "answer": "96"}
++{"question": "How many ordered pairs of positive real numbers $(a,b)$ satisfy the equation\n\\[(1+2a)(2+2b)(2a+b) = 32ab?\\]", "answer": "1"}
++{"question": "Let $K$ be the number of sequences $A_1$, $A_2$, $\\dots$, $A_n$ such that $n$ is a positive integer less than or equal to $10$, each $A_i$ is a subset of $\\{1, 2, 3, \\dots, 10\\}$, and $A_{i-1}$ is a subset of $A_i$ for each $i$ between $2$ and $n$, inclusive. For example, $\\{\\}$, $\\{5, 7\\}$, $\\{2, 5, 7\\}$, $\\{2, 5, 7\\}$, $\\{2, 5, 6, 7, 9\\}$ is one such sequence, with $n = 5$.What is the remainder when $K$ is divided by $10$?", "answer": "5"}
++{"question": "There is a unique sequence of integers $a_1, a_2, \\cdots a_{2023}$ such that\n\\[\\tan2023x = \\frac{a_1 \\tan x + a_3 \\tan^3 x + a_5 \\tan^5 x + \\cdots + a_{2023} \\tan^{2023} x}{1 + a_2 \\tan^2 x + a_4 \\tan^4 x \\cdots + a_{2022} \\tan^{2022} x}\\]whenever $\\tan 2023x$ is defined. What is $a_{2023}?$", "answer": "-1"}
++{"question": "How many positive perfect squares less than $2023$ are divisible by $5$?", "answer": "8"}
++{"question": "How many digits are in the base-ten representation of $8^5 \\cdot 5^{10} \\cdot 15^5$?", "answer": "18"}
++{"question": "Janet rolls a standard $6$-sided die $4$ times and keeps a running total of the numbers she rolls. What is the probability that at some point, her running total will equal $3$? The final answer can be written in the form $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m+n$?", "answer": "265"}
++{"question": "Points $A$ and $B$ lie on the graph of $y=\\log_{2}x$. The midpoint of $\\overline{AB}$ is $(6, 2)$. What is the positive difference between the $x$-coordinates of $A$ and $B$? The final answer can be written in the form $m \\sqrt{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m+n$?", "answer": "9"}
++{"question": "A digital display shows the current date as an $8$-digit integer consisting of a $4$-digit year, followed by a $2$-digit month, followed by a $2$-digit date within the month. For example, Arbor Day this year is displayed as 20230428. For how many dates in $2023$ will each digit appear an even number of times in the 8-digital display for that date?", "answer": "9"}
++{"question": "Maureen is keeping track of the mean of her quiz scores this semester. If Maureen scores an $11$ on the next quiz, her mean will increase by $1$. If she scores an $11$ on each of the next three quizzes, her mean will increase by $2$. What is the mean of her quiz scores currently?", "answer": "7"}
++{"question": "Mrs. Jones is pouring orange juice into four identical glasses for her four sons. She fills the first three glasses completely but runs out of juice when the fourth glass is only $\\frac{1}{3}$ full. What fraction of a glass must Mrs. Jones pour from each of the first three glasses into the fourth glass so that all four glasses will have the same amount of juice? The final answer can be written in the form $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m+n$?", "answer": "7"}
++{"question": "In the $xy$-plane, a circle of radius $4$ with center on the positive $x$-axis is tangent to the $y$-axis at the origin, and a circle with radius $10$ with center on the positive $y$-axis is tangent to the $x$-axis at the origin. What is the slope of the line passing through the two points at which these circles intersect? The final answer can be written in the form $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m+n$?", "answer": "7"}
++{"question": "Calculate the maximum area of an isosceles trapezoid that has legs of length $1$ and one base twice as long as the other. The final answer can be written in the form $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m^2+n^2$?", "answer": "13"}
++{"question": "For complex number $u = a+bi$ and $v = c+di$ (where $i=\\sqrt{-1}$), define the binary operation\n$u \\otimes v = ac + bdi$\nSuppose $z$ is a complex number such that $z\\otimes z = z^{2}+40$. What is $|z|^2$?", "answer": "50"}
++{"question": "A rectangular box $P$ has distinct edge lengths $a$, $b$, and $c$. The sum of the lengths of all $12$ edges of $P$ is $13$, the areas of all $6$ faces of $P$ is $\\frac{11}{2}$, and the volume of $P$ is $\\frac{1}{2}$. Find the length of the longest interior diagonal connecting two vertices of $P$. The final answer can be written in the form $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m+n$?", "answer": "13"}
++{"question": "For how many ordered pairs $(a,b)$ of integers does the polynomial $x^3+ax^2+bx+6$ have $3$ distinct integer roots?", "answer": "5"}
++{"question": "In the state of Coinland, coins have values $6,10,$ and $15$ cents. Suppose $x$ is the value in cents of the most expensive item in Coinland that cannot be purchased using these coins with exact change. What is the sum of the digits of $x?$", "answer": "11"}
++{"question": "Triangle $ABC$ has side lengths in arithmetic progression, and the smallest side has length $6.$ If the triangle has an angle of $120^\\circ,$ Find the area of $ABC$. The final answer can be simplified in the form $m \\sqrt{n}$, where $m$ and $n$ are positive integers and $n$ without square factore. What is $m+n$?", "answer": "18"}
++{"question": "Carlos went to a sports store to buy running shoes. Running shoes were on sale, with prices reduced by $20\\%$ on every pair of shoes. Carlos also knew that he had to pay a $7.5\\%$ sales tax on the discounted price. He had $$43$ dollars. What is the original (before discount) price of the most expensive shoes he could afford to buy?", "answer": "50"}
++{"question": "When $n$ standard six-sided dice are rolled, the product of the numbers rolled can be any of $936$ possible values. What is $n$?", "answer": "11"}
++{"question": "Suppose that $a$, $b$, $c$ and $d$ are positive integers satisfying all of the following relations.\n\\[abcd=2^6\\cdot 3^9\\cdot 5^7\\]\n\\[\\text{lcm}(a,b)=2^3\\cdot 3^2\\cdot 5^3\\]\n\\[\\text{lcm}(a,c)=2^3\\cdot 3^3\\cdot 5^3\\]\n\\[\\text{lcm}(a,d)=2^3\\cdot 3^3\\cdot 5^3\\]\n\\[\\text{lcm}(b,c)=2^1\\cdot 3^3\\cdot 5^2\\]\n\\[\\text{lcm}(b,d)=2^2\\cdot 3^3\\cdot 5^2\\]\n\\[\\text{lcm}(c,d)=2^2\\cdot 3^3\\cdot 5^2\\]\nWhat is $\\text{gcd}(a,b,c,d)$?", "answer": "3"}
++{"question": "A $3-4-5$ right triangle is inscribed in circle $A$, and a $5-12-13$ right triangle is inscribed in circle $B$. Find the ratio of the area of circle $A$ to the area of circle $B$. The final answer can be written in the form $\\frac{m}{n}$, where $m$ and $n$ are relatively prime positive integers. What is $m+n$?", "answer": "194"}
++{"question": "Jackson's paintbrush makes a narrow strip with a width of $6.5$ millimeters. Jackson has enough paint to make a strip $25$ meters long. How many square centimeters of paper could Jackson cover with paint?", "answer": "1625"}
++{"question": "You are playing a game. A $2 \\times 1$ rectangle covers two adjacent squares (oriented either horizontally or vertically) of a $3 \\times 3$ grid of squares, but you are not told which two squares are covered. Your goal is to find at least one square that is covered by the rectangle. A \"turn\" consists of you guessing a square, after which you are told whether that square is covered by the hidden rectangle. What is the minimum number of turns you need to ensure that at least one of your guessed squares is covered by the rectangle?", "answer": "4"}
++{"question": "When the roots of the polynomial \n\\[P(x)  = (x-1)^1 (x-2)^2 (x-3)^3 \\cdot \\cdot \\cdot (x-10)^{10}\\]\nare removed from the number line, what remains is the union of $11$ disjoint open intervals. On how many of these intervals is $P(x)$ positive?", "answer": "6"}
++{"question": "For how many integers $n$ does the expression\\[\\sqrt{\\frac{\\log (n^2) - (\\log n)^2}{\\log n - 3}}\\]represent a real number, where log denotes the base $10$ logarithm?", "answer": "901"}
++{"question": "How many nonempty subsets $B$ of ${0, 1, 2, 3, \\cdots, 12}$ have the property that the number of elements in $B$ is equal to the least element of $B$? For example, $B = {4, 6, 8, 11}$ satisfies the condition.", "answer": "144"}
++{"question": "What is the area of the region in the coordinate plane defined by\n$| | x | - 1 | + | | y | - 1 | \\le 1$?", "answer": "8"}
+diff --git a/data/brumo25_test.jsonl b/data/brumo25_test.jsonl
+new file mode 100644
+index 0000000..b697fbb
+--- /dev/null
++++ b/data/brumo25_test.jsonl
+@@ -0,0 +1,30 @@
++{"question": "One hundred concentric circles are labelled $C_{1}, C_{2}, C_{3}, \\ldots, C_{100}$. Each circle $C_{n}$ is inscribed within an equilateral triangle whose vertices are points on $C_{n+1}$. Given $C_{1}$ has a radius of $1$, what is the radius of $C_{100}$ ?", "answer": "2^{99}"}
++{"question": "An infinite geometric sequence with common ratio $r$ sums to $91$. A new sequence starting with the same term has common ratio $r^{3}$. The sum of the new sequence produced is $81$. What was the common ratio of the original sequence?", "answer": "\\frac{1}{9}"}
++{"question": "Let $A, B, C, D$, and $E$ be five equally spaced points on a line in that order. Let $F, G, H$, and $I$ all be on the same side of line $A E$ such that triangles $A F B, B G C, C H D$, and $D I E$ are equilateral with side length $1$. Let $S$ be the region consisting of the interiors of all four triangles. Compute the length of segment $A I$ that is contained in $S$.", "answer": "\\frac{\\sqrt{13}}{2}"}
++{"question": "If $5 f(x)-x f\\left(\\frac{1}{x}\\right)=\\frac{1}{17} x^{2}$, determine $f(3)$.", "answer": "\\frac{1}{9}"}
++{"question": "How many ways are there to arrange $1,2,3,4,5,6$ such that no two consecutive numbers have the same remainder when divided by $3$ ?", "answer": "240"}
++{"question": "Joshua is playing with his number cards. He has $9$ cards of $9$ lined up in a row. He puts a multiplication sign between two of the $9 \\mathrm{~s}$ and calculates the product of the two strings of $9 \\mathrm{~s}$. For example, one possible result is $999 \\times 999999=998999001$. Let $S$ be the sum of all possible distinct results (note that $999 \\times 999999$ yields the same result as $999999 \\times 999$ ). What is the sum of digits of $S$ ?", "answer": "72"}
++{"question": "Bruno the Bear is tasked to organize $16$ identical brown balls into $7$ bins labeled 1-7. He must distribute the balls among the bins so that each odd-labeled bin contains an odd number of balls, and each even-labeled bin contains an even number of balls (with $0$ considered even). In how many ways can Bruno do this?", "answer": "924"}
++{"question": "Let $f(n)$ be the number obtained by increasing every prime factor in $f$ by one. For instance, $f(12)=(2+1)^{2}(3+1)=36$. What is the lowest $n$ such that $6^{2025}$ divides $f^{(n)}(2025)$, where $f^{(n)}$ denotes the $n$th iteration of $f$ ?", "answer": "20"}
++{"question": "How many positive integer divisors of $63^{10}$ do not end in a $1$ ?", "answer": "173"}
++{"question": "Bruno is throwing a party and invites $n$ guests. Each pair of party guests are either friends or enemies. Each guest has exactly $12$ enemies. All guests believe the following: the friend of an enemy is an enemy. Calculate the sum of all possible values of $n$. (Please note: Bruno is not a guest at his own party)", "answer": "100"}
++{"question": "In acute $\\triangle A B C$, let $D$ be the foot of the altitude from $A$ to $B C$ and $O$ be the circumcenter. Suppose that the area of $\\triangle A B D$ is equal to the area of $\\triangle A O C$. Given that $O D=2$ and $B D=3$, compute $A D$.", "answer": "3+2\\sqrt{2}"}
++{"question": "Alice has $10$ gifts $g_{1}, g_{2}, \\ldots, g_{10}$ and $10$ friends $f_{1}, f_{2}, \\ldots, f_{10}$. Gift $g_{i}$ can be given to friend $f_{j}$ if\n\n$$\ni-j=-1,0, \\text { or } 1 \\quad(\\bmod 10)\n$$\n\nHow many ways are there for Alice to pair the $10$ gifts with the $10$ friends such that each friend receives one gift?", "answer": "125"}
++{"question": "Let $\\triangle A B C$ be an equilateral triangle with side length $1$. A real number $d$ is selected uniformly at random from the open interval $(0,0.5)$. Points $E$ and $F$ lie on sides $A C$ and $A B$, respectively, such that $A E=d$ and $A F=1-d$. Let $D$ be the intersection of lines $B E$ and $C F$.\n\nConsider line $\\ell$ passing through both points of intersection of the circumcircles of triangles $\\triangle D E F$ and $\\triangle D B C . O$ is the circumcenter of $\\triangle D E F$. Line $\\ell$ intersects line $\\overleftrightarrow{B C}$ at point $P$, and point $Q$ lies on $A P$ such that $\\angle A Q B=120^{\\circ}$. What is the probability that the line segment $\\overline{Q O}$ has length less than $\\frac{1}{3}$ ?", "answer": "\\frac{1}{3}"}
++{"question": "Define sequence $\\left\\{a_{n}\\right\\}_{n=1}^{\\infty}$ such that $a_{1}=\\frac{\\pi}{3}$ and $a_{n+1}=\\cot ^{-1}\\left(\\csc \\left(a_{n}\\right)\\right)$ for all positive integers $n$. Find the value of\n\n$$\n\\frac{1}{\\cos \\left(a_{1}\\right) \\cos \\left(a_{2}\\right) \\cos \\left(a_{3}\\right) \\cdots \\cos \\left(a_{16}\\right)}\n$$", "answer": "7"}
++{"question": "Define $\\{x\\}$ to be the fractional part of $x$. For example, $\\{20.25\\}=0.25$ and $\\{\\pi\\}=\\pi-3$. Let $A=\\sum_{a=1}^{96} \\sum_{n=1}^{96}\\left\\{\\frac{a^{n}}{97}\\right\\}$, where $\\{x\\}$ denotes the fractional part of $x$. Compute $A$ rounded to the nearest integer.", "answer": "4529"}
++{"question": "Find the smallest positive integer $n$ such that $n$ is divisible by exactly $25$ different positive integers.", "answer": "1296"}
++{"question": "Two squares, $A B C D$ and $A E F G$, have equal side length $x$. They intersect at $A$ and $O$. Given that $C O=2$ and $O A=2 \\sqrt{2}$, what is $x$ ?", "answer": "1+\\sqrt{3}"}
++{"question": "Bruno and Brutus are running on a circular track with a $20$ foot radius. Bruno completes $5$ laps every hour, while Brutus completes $7$ laps every hour. If they start at the same point but run in opposite directions, how far along the track's circumference (in feet) from the starting point are they when they meet for the sixth time? Note: Do not count the moment they start running as a meeting point.", "answer": "20\\pi"}
++{"question": "What is the smallest positive integer $n$ such that $z^{n}-1$ and $(z-\\sqrt{3})^{n}-1$ share a common complex root?", "answer": "12"}
++{"question": "Consider a pond with lily pads numbered from $1$ to $12$ arranged in a circle. Bruno the frog starts on lily pad 1. Each turn, Bruno has an equal probability of making one of three moves: jumping $4$ lily pads clockwise, jumping $2$ lily pads clockwise, or jumping $1$ lily pad counterclockwise. What is the expected number of turns for Bruno to return to lily pad $1$ for the first time?", "answer": "12"}
++{"question": "$4$ bears - Aruno, Bruno, Cruno and Druno - are each given a card with a positive integer and are told that the sum of their $4$ numbers is $17$. They cannot show each other their cards, but discuss a series of observations in the following order:\n\nAruno: \"I think it is possible that the other three bears all have the same card.\"\nBruno: \"At first, I thought it was possible for the other three bears to have the same card. Now I know it is impossible for them to have the same card.\"\nCruno: \"I think it is still possible that the other three bears have the same card.\"\nDruno: \"I now know what card everyone has.\"\nWhat is the product of their four card values?", "answer": "160"}
++{"question": "Digits $1$ through $9$ are placed on a $3 x 3$ square such that all rows and columns sum to the same value. Please note that diagonals do not need to sum to the same value. How many ways can this be done?", "answer": "72"}
++{"question": "Define the operation $\\oplus$ by\n\n$$\nx \\oplus y=x y-2 x-2 y+6 .\n$$\n\nCompute all complex numbers $a$ such that\n\n$$\na \\oplus(a \\oplus(a \\oplus a))=a .\n$$", "answer": "2,3,\\frac{3+i\\sqrt{3}}{2},\\frac{3-i\\sqrt{3}}{2}"}
++{"question": "Define the function $f$ on positive integers\n\n$$\nf(n)= \\begin{cases}\\frac{n}{2} & \\text { if } n \\text { is even } \\\\ n+1 & \\text { if } n \\text { is odd }\\end{cases}\n$$\n\nLet $S(n)$ equal the smallest positive integer $k$ such that $f^{k}(n)=1$. How many positive integers satisfy $S(n)=11$ ?", "answer": "89"}
++{"question": "Let $A B C D E F$ be a convex cyclic hexagon. Suppose that $A B=D E=\\sqrt{5}, B C=E F=3$, and $C D=F A=\\sqrt{20}$. Compute the circumradius of $A B C D E F$.", "answer": "\\frac{1+\\sqrt{31}}{2}"}
++{"question": "A repetend is the infinitely repeated digit sequence of a repeating decimal. What are the last three digits of the repetend of the decimal representation of $\\frac{1}{727}$, given that the repetend has a length of $726$ ? Express the answer as a three-digit number. Include preceding zeros if there are any.", "answer": "337"}
++{"question": "Consider a $54$-deck of cards, i.e. a standard $52$-card deck together with two jokers. Ada draws cards from the deck until Ada has drawn an ace, a king, and a queen. How many cards does Ada pick up on average?", "answer": "\\frac{737}{39}"}
++{"question": "Let $\\omega$ be a circle, and let a line $\\ell$ intersect $\\omega$ at two points, $P$ and $Q$. Circles $\\omega_{1}$ and $\\omega_{2}$ are internally tangent to $\\omega$ at points $X$ and $Y$, respectively, and both are tangent to $\\ell$ at a common point $D$. Similarly, circles $\\omega_{3}$ and $\\omega_{4}$ are externally tangent to $\\omega$ at $X$ and $Y$, respectively, and are tangent to $\\ell$ at points $E$ and $F$, respectively.\nGiven that the radius of $\\omega$ is $13$, the segment $\\overline{P Q}=24$, and $\\overline{Y D}=\\overline{Y E}$, find the length of segment $\\overline{Y F}$.", "answer": "5\\sqrt{2}"}
++{"question": "Let $f$ be a degree $7$ polynomial satisfying\n$$\nf(k)=\\frac{1}{k^{2}}\n$$\n\nfor $k \\in\\{1 \\cdot 2,2 \\cdot 3, \\ldots, 8 \\cdot 9\\}$. Find $f(90)-\\frac{1}{90^{2}}$.", "answer": "-\\frac{2431}{50}"}
++{"question": "Let $\\triangle A B C$ be an isosceles triangle with $A B=A C$. Let $D$ be a point on the circumcircle of $\\triangle A B C$ on minor arc $A B$. Let $\\overline{A D}$ intersect the extension of $\\overline{B C}$ at $E$. Let $F$ be the midpoint of segment $A C$, and let $G$ be the intersection of $\\overline{E F}$ and $\\overline{A B}$. Let the extension of $\\overline{D G}$ intersect $\\overline{A C}$ and the circumcircle of $\\triangle A B C$ at $H$ and $I$, respectively. Given that $D G=3, G H=5$, and $H I=1$, compute the length of $A E$.", "answer": "\\frac{9\\sqrt{30}}{4}"}
+diff --git a/data/hmmt25_test.jsonl b/data/hmmt25_test.jsonl
+new file mode 100644
+index 0000000..59f2e80
+--- /dev/null
++++ b/data/hmmt25_test.jsonl
+@@ -0,0 +1,30 @@
++{"question": "Compute the sum of the positive divisors (including $1$) of $9!$ that have units digit $1$.", "answer": "103"}
++{"question": "Mark writes the expression $\\sqrt{\\underline{a b c d}}$ on the board, where $\\underline{a b c d}$ is a four-digit number and $a \\neq 0$. Derek, a toddler, decides to move the $a$, changing Mark's expression to $a \\sqrt{\\underline{b c d}}$. Surprisingly, these two expressions are equal. Compute the only possible four-digit number $\\underline{a b c d}$.", "answer": "3375"}
++{"question": "Given that $x, y$, and $z$ are positive real numbers such that\n\n$$\nx^{\\log _{2}(y z)}=2^{8} \\cdot 3^{4}, \\quad y^{\\log _{2}(z x)}=2^{9} \\cdot 3^{6}, \\quad \\text { and } \\quad z^{\\log _{2}(x y)}=2^{5} \\cdot 3^{10}\n$$\ncompute the smallest possible value of $x y z$.", "answer": "\\frac{1}{576}"}
++{"question": "Let $\\lfloor z\\rfloor$ denote the greatest integer less than or equal to $z$. Compute\n\n$$\n\\sum_{j=-1000}^{1000}\\left\\lfloor\\frac{2025}{j+0.5}\\right\\rfloor\n$$", "answer": "-984"}
++{"question": "Let $\\mathcal{S}$ be the set of all nonconstant monic polynomials $P$ with integer coefficients satisfying $P(\\sqrt{3}+\\sqrt{2})=$ $P(\\sqrt{3}-\\sqrt{2})$. If $Q$ is an element of $\\mathcal{S}$ with minimal degree, compute the only possible value of $Q(10)-Q(0)$.", "answer": "890"}
++{"question": "Let $r$ be the remainder when $2017^{2025!}-1$ is divided by 2025!. Compute $\\frac{r}{2025!}$. (Note that $2017$ is prime.)", "answer": "\\frac{1311}{2017}"}
++{"question": "There exists a unique triple $(a, b, c)$ of positive real numbers that satisfies the equations\n$$\n2\\left(a^{2}+1\\right)=3\\left(b^{2}+1\\right)=4\\left(c^{2}+1\\right) \\quad \\text { and } \\quad a b+b c+c a=1\n$$\n\nCompute $a+b+c$.", "answer": "\\frac{9 \\sqrt{23}}{23}"}
++{"question": "Define $\\operatorname{sgn}(x)$ to be $1$ when $x$ is positive, $-1$ when $x$ is negative, and $0$ when $x$ is $0$. Compute\n\n$$\n\\sum_{n=1}^{\\infty} \\frac{\\operatorname{sgn}\\left(\\sin \\left(2^{n}\\right)\\right)}{2^{n}}\n$$\n(The arguments to sin are in radians.)", "answer": "1-\\frac{2}{\\pi}"}
++{"question": "Let $f$ be the unique polynomial of degree at most $2026$ such that for all $n \\in\\{1,2,3, \\ldots, 2027\\}$,\n$$\nf(n)= \\begin{cases}1 & \\text { if } n \\text { is a perfect square } \\\\ 0 & \\text { otherwise }\\end{cases}\n$$\n\nSuppose that $\\frac{a}{b}$ is the coefficient of $x^{2025}$ in $f$, where $a$ and $b$ are integers such that $\\operatorname{gcd}(a, b)=1$. Compute the unique integer $r$ between $0$ and $2026$ (inclusive) such that $a-r b$ is divisible by $2027$. (Note that $2027$ is prime.)", "answer": "1037"}
++{"question": "Let $a, b$, and $c$ be pairwise distinct complex numbers such that\n$$\na^{2}=b+6, \\quad b^{2}=c+6, \\quad \\text { and } \\quad c^{2}=a+6\n$$\n\nCompute the two possible values of $a+b+c$. In your answer, list the two values in a comma-separated list of two valid \\LaTeX expressions.", "answer": "\\frac{-1+\\sqrt{17}}{2}, \\frac{-1-\\sqrt{17}}{2}"}
++{"question": "Compute the number of ways to arrange the numbers $1,2,3,4,5,6$, and $7$ around a circle such that the product of every pair of adjacent numbers on the circle is at most 20. (Rotations and reflections count as different arrangements.)", "answer": "56"}
++{"question": "Kevin the frog in on the bottom-left lily pad of a $3 \\times 3$ grid of lily pads, and his home is at the topright lily pad. He can only jump between two lily pads which are horizontally or vertically adjacent. Compute the number of ways to remove $4$ of the lily pads so that the bottom-left and top-right lily pads both remain, but Kelvin cannot get home.", "answer": "29"}
++{"question": "Ben has $16$ balls labeled $1,2,3, \\ldots, 16$, as well as $4$ indistinguishable boxes. Two balls are \\emph{neighbors} if their labels differ by $1$. Compute the number of ways for him to put $4$ balls in each box such that each ball is in the same box as at least one of its neighbors. (The order in which the balls are placed does not matter.)", "answer": "105"}
++{"question": "Sophie is at $(0,0)$ on a coordinate grid and would like to get to $(3,3)$. If Sophie is at $(x, y)$, in a single step she can move to one of $(x+1, y),(x, y+1),(x-1, y+1)$, or $(x+1, y-1)$. She cannot revisit any points along her path, and neither her $x$-coordinate nor her $y$-coordinate can ever be less than $0$ or greater than 3. Compute the number of ways for Sophie to reach $(3,3)$.", "answer": "2304"}
++{"question": "In an $11 \\times 11$ grid of cells, each pair of edge-adjacent cells is connected by a door. Karthik wants to walk a path in this grid. He can start in any cell, but he must end in the same cell he started in, and he cannot go through any door more than once (not even in opposite directions). Compute the maximum number of doors he can go through in such a path.", "answer": "200"}
++{"question": "Compute the number of ways to pick two rectangles in a $5 \\times 5$ grid of squares such that the edges of the rectangles lie on the lines of the grid and the rectangles do not overlap at their interiors, edges, or vertices. The order in which the rectangles are chosen does not matter.", "answer": "6300"}
++{"question": "Compute the number of ways to arrange $3$ copies of each of the $26$ lowercase letters of the English alphabet such that for any two distinct letters $x_{1}$ and $x_{2}$, the number of $x_{2}$ 's between the first and second occurrences of $x_{1}$ equals the number of $x_{2}$ 's between the second and third occurrences of $x_{1}$.", "answer": "2^{25} \\cdot 26!"}
++{"question": "Albert writes $2025$ numbers $a_{1}, \\ldots, a_{2025}$ in a circle on a blackboard. Initially, each of the numbers is uniformly and independently sampled at random from the interval $[0,1]$. Then, each second, he \\emph{simultaneously} replaces $a_{i}$ with $\\max \\left(a_{i-1}, a_{i}, a_{i+1}\\right)$ for all $i=1,2, \\ldots, 2025$ (where $a_{0}=a_{2025}$ and $a_{2026}=a_{1}$ ). Compute the expected value of the number of distinct values remaining after $100$ seconds.", "answer": "\\frac{2025}{101}"}
++{"question": "Two points are selected independently and uniformly at random inside a regular hexagon. Compute the probability that a line passing through both of the points intersects a pair of opposite edges of the hexagon.", "answer": "\\frac{4}{9}"}
++{"question": "The circumference of a circle is divided into $45$ arcs, each of length $1$. Initially, there are $15$ snakes, each of length $1$, occupying every third arc. Every second, each snake independently moves either one arc left or one arc right, each with probability $\\frac{1}{2}$. If two snakes ever touch, they merge to form a single snake occupying the arcs of both of the previous snakes, and the merged snake moves as one snake. Compute the expected number of seconds until there is only one snake left.", "answer": "\\frac{448}{3}"}
++{"question": "Equilateral triangles $\\triangle A B C$ and $\\triangle D E F$ are drawn such that points $B, E, F$, and $C$ lie on a line in this order, and point $D$ lies inside triangle $\\triangle A B C$. If $B E=14, E F=15$, and $F C=16$, compute $A D$.", "answer": "26"}
++{"question": "In a two-dimensional cave with a parallel floor and ceiling, two stalactites of lengths $16$ and $36$ hang perpendicularly from the ceiling, while two stalagmites of heights $25$ and $49$ grow perpendicularly from the ground. If the tips of these four structures form the vertices of a square in some order, compute the height of the cave.", "answer": "63"}
++{"question": "Point $P$ lies inside square $A B C D$ such that the areas of $\\triangle P A B, \\triangle P B C, \\triangle P C D$, and $\\triangle P D A$ are 1, $2,3$, and $4$, in some order. Compute $P A \\cdot P B \\cdot P C \\cdot P D$.", "answer": "8\\sqrt{10}"}
++{"question": "A semicircle is inscribed in another semicircle if the smaller semicircle's diameter is a chord of the larger semicircle, and the smaller semicircle's arc is tangent to the diameter of the larger semicircle.\nSemicircle $S_{1}$ is inscribed in a semicircle $S_{2}$, which is inscribed in another semicircle $S_{3}$. The radii of $S_{1}$ and $S_{3}$ are $1$ and 10, respectively, and the diameters of $S_{1}$ and $S_{3}$ are parallel. The endpoints of the diameter of $S_{3}$ are $A$ and $B$, and $S_{2}$ 's arc is tangent to $A B$ at $C$. Compute $A C \\cdot C B$.\n\n\\begin{tikzpicture}\n\n    % S_1\n    \\coordinate (S_1_1) at (6.57,0.45);\n    \\coordinate (S_1_2) at (9.65,0.45);\n    \\draw (S_1_1) -- (S_1_2);\n\n    \\draw (S_1_1) arc[start angle=180, end angle=0, radius=1.54]\n    node[midway,above] {};\n\n    \\node[above=0.5cm] at (7,1.2) {$S_1$};\n\n    % S_2 \n    \\coordinate (S_2_1) at (6.32,4.82);\n    \\coordinate (S_2_2) at (9.95,0.68);\n\n    \\draw (S_2_1) -- (S_2_2);\n\n    \\draw (S_2_1) arc[start angle=131, end angle=311, radius=2.75]\n    node[midway,above] {};\n\n    \\node[above=0.5cm] at (5,2) {$S_2$};\n\n    % S_3\n    \\coordinate (A) at (0,0);\n    \\coordinate (B) at (10,0);\n    \\draw (A) -- (B);\n    \\fill (A) circle (2pt) node[below] {$A$};\n    \\fill (B) circle (2pt) node[below] {$B$};\n\n    \\draw (A) arc[start angle=180, end angle=0, radius=5]\n    node[midway,above] {};\n    \\node[above=0.5cm] at (1,3) {$S_3$};\n\n    \\coordinate (C) at (8.3,0);\n    \\fill (C) circle (2pt) node[below] {$C$};\n\n\\end{tikzpicture}", "answer": "20"}
++{"question": "Let $\\triangle A B C$ be an equilateral triangle with side length $6$. Let $P$ be a point inside triangle $\\triangle A B C$ such that $\\angle B P C=120^{\\circ}$. The circle with diameter $\\overline{A P}$ meets the circumcircle of $\\triangle A B C$ again at $X \\neq A$. Given that $A X=5$, compute $X P$.", "answer": "\\sqrt{23}-2 \\sqrt{3}"}
++{"question": "Trapezoid $A B C D$, with $A B \\| C D$, has side lengths $A B=11, B C=8, C D=19$, and $D A=4$. Compute the area of the convex quadrilateral whose vertices are the circumcenters of $\\triangle A B C, \\triangle B C D$, $\\triangle C D A$, and $\\triangle D A B$.", "answer": "9\\sqrt{15}"}
++{"question": "Point $P$ is inside triangle $\\triangle A B C$ such that $\\angle A B P=\\angle A C P$. Given that $A B=6, A C=8, B C=7$, and $\\frac{B P}{P C}=\\frac{1}{2}$, compute $\\frac{[B P C]}{[A B C]}$.\n(Here, $[X Y Z]$ denotes the area of $\\triangle X Y Z$ ).", "answer": "\\frac{7}{18}"}
++{"question": "Let $A B C D$ be an isosceles trapezoid such that $C D>A B=4$. Let $E$ be a point on line $C D$ such that $D E=2$ and $D$ lies between $E$ and $C$. Let $M$ be the midpoint of $\\overline{A E}$. Given that points $A, B, C, D$, and $M$ lie on a circle with radius $5$, compute $M D$.", "answer": "\\sqrt{6}"}
++{"question": "Let $A B C D$ be a rectangle with $B C=24$. Point $X$ lies inside the rectangle such that $\\angle A X B=90^{\\circ}$. Given that triangles $\\triangle A X D$ and $\\triangle B X C$ are both acute and have circumradii $13$ and $15$, respectively, compute $A B$.", "answer": "14+4\\sqrt{37}"}
++{"question": "A plane $\\mathcal{P}$ intersects a rectangular prism at a hexagon which has side lengths $45,66,63,55,54$, and 77, in that order. Compute the distance from the center of the rectangular prism to $\\mathcal{P}$.", "answer": "\\sqrt{\\frac{95}{24}}"}

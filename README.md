@@ -1,9 +1,17 @@
 # PLWS
 
-PLWS 是本仓库的主方法。源码、配置与实验产物已按可复现边界整理；历史产物保留在结构化归档中。
+PLWS 是本仓库的主方法：在第一扇连续同答窗后继续推理，并压制 CORE
+反思词。源码、配置与实验产物按可复现边界分离。
 
 本机进度看 `STATUS.md`，流水看 `docs/log.md`（都不进 git）。
 跨项目核验与教训写在工作区 `.cursor/rules/experiment-status.mdc`，不写在本文件。
+
+## 快速入口
+
+- 租卡部署与单格运行：[`docs/RENTAL_SERVER.md`](docs/RENTAL_SERVER.md)
+- Full-CoT 公平协议：[`docs/FULLCOT_PROTOCOL.md`](docs/FULLCOT_PROTOCOL.md)
+- 产物目录与断点同步：[`docs/ARTIFACTS.md`](docs/ARTIFACTS.md)
+- 脚本分层与正式入口：[`scripts/README.md`](scripts/README.md)
 
 ## 方法边界
 
@@ -14,9 +22,8 @@ PLWS 是本仓库的主方法。源码、配置与实验产物已按可复现边
 ## 数据与产物
 
 - `samples/`：只读输入。
-- `results/`：唯一机器结果根；规范见 [`results/README.md`](results/README.md)。
-- `tables/`：面向人的结果表。当前主表是 [`tables/firstwin_wait/fullcot_puma_plws.md`](tables/firstwin_wait/fullcot_puma_plws.md)。
-- `figures/`：面向人的成品图。
+- `results/`：唯一机器结果根；规范见 [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md)。
+- `tables/`、`figures/`：本地生成的人读结果，默认不进 Git。
 - `configs/`：模型、数据集和方法默认配置。
 
 ## 默认窗口定义

@@ -25,14 +25,16 @@ sys.path.insert(0, str(ROOT_HINT / "src"))
 
 from plws.artifacts import atomic_write_json, load_jsonl, utc_now  # noqa: E402
 from plws.inputs import same_answer  # noqa: E402
-from plws.lexicon import LEXICONS, get_lexicon  # noqa: E402
+from plws.lexicon import LEXICONS, suppress_bad_words, usable_bad_words  # noqa: E402
 from plws.paths import PLWSPaths, datasets_for_jobs  # noqa: E402
+from plws.runtime import model_path, nvidia_ld_library_path  # noqa: E402
 from plws.protocol import (  # noqa: E402
     FULLCOT_GENERATION_TOKENS,
     MAX_MODEL_LEN,
     PROTOCOL_ID,
     TRUNCATED_ANSWER_FIX_TOKENS,
 )
+from plws.piece_text import sanitize_tokenizer_pieces  # noqa: E402
 from plws.window import K  # noqa: E402
 
 PATHS = PLWSPaths.discover(__file__)
@@ -49,29 +51,25 @@ def shutdown_llm(llm: Any) -> None:
         shutdown(timeout=10)
 
 
-def _nvidia_lib_path() -> str:
-    root = Path("/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm")
-    extra = ":".join(
-        sorted(str(path) for path in (root / ".venv" / "lib").glob("**/nvidia/*/lib") if path.is_dir())
-    )
-    current = os.environ.get("LD_LIBRARY_PATH", "")
-    return f"{extra}:{current}" if extra else current
-
-
-os.environ["LD_LIBRARY_PATH"] = _nvidia_lib_path()
+os.environ["LD_LIBRARY_PATH"] = nvidia_ld_library_path()
 sys.path.insert(0, str(AE / "scripts"))
 sys.path.insert(0, str(PUMA / "puma"))
 
 MODELS = {
-    "r1_7b": "/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-7B",
-    "nemotron_8b": "/mnt/d/lsj/models/Llama-3.1-Nemotron-Nano-8B-v1",
-    "r1_14b": "/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-14B",
-    "r1_32b": "/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-32B",
-    "qwen3_4b": "/mnt/d/lsj/models/Qwen3-4B",
-    "qwen3_8b": "/mnt/d/lsj/models/Qwen3-8B",
-    "qwen3_30b_a3b": "/mnt/d/lsj/models/Qwen3-30B-A3B-Thinking-2507",
-    "qwq_32b": "/mnt/d/lsj/models/QwQ-32B",
-    "qwen3_32b": "/mnt/d/lsj/models/Qwen3-32B",
+    tag: str(model_path(tag))
+    for tag in (
+        "r1_7b",
+        "nemotron_8b",
+        "r1_14b",
+        "r1_1p5b",
+        "r1_llama_8b",
+        "r1_32b",
+        "qwen3_4b",
+        "qwen3_8b",
+        "qwen3_30b_a3b",
+        "qwq_32b",
+        "qwen3_32b",
+    )
 }
 
 from math_grader import check_is_correct  # noqa: E402
@@ -145,6 +143,11 @@ def main() -> None:
     )
     parser.add_argument("--out", type=Path)
     parser.add_argument(
+        "--ignore-existing",
+        action="store_true",
+        help="Score every job even if a reusable uid already exists (leak-fix reruns).",
+    )
+    parser.add_argument(
         "--isolated-output",
         action="store_true",
         help="Resume only from --out's directory; do not reuse canonical scores.",
@@ -188,7 +191,7 @@ def main() -> None:
             f"{args.protocol_id} requires --answer-tokens "
             f"{TRUNCATED_ANSWER_FIX_TOKENS}, got {args.answer_tokens}"
         )
-    bad_words = list(get_lexicon(args.lexicon))
+    bad_words = suppress_bad_words(args.lexicon)
     kind = args.run_kind or "firstwin"
 
     jobs_source = args.jobs
@@ -279,20 +282,20 @@ def main() -> None:
                         lexicon=args.lexicon,
                     )
                 )
+    resume_paths = [args.out]
+    if not args.ignore_existing:
+        resume_paths.extend(
+            candidate
+            for directory in read_dirs
+            for candidate in (
+                *sorted(directory.glob("shard_*.jsonl")),
+                *sorted(directory.glob("scores_shard*.jsonl")),
+                directory / "scores.jsonl",
+            )
+        )
     already = {
         str(row["uid"])
-        for path in (
-            args.out,
-            *(
-                candidate
-                for directory in read_dirs
-                for candidate in (
-                    *sorted(directory.glob("shard_*.jsonl")),
-                    *sorted(directory.glob("scores_shard*.jsonl")),
-                    directory / "scores.jsonl",
-                )
-            ),
-        )
+        for path in resume_paths
         for row in load_jsonl(path)
         if row.get("status") in {"ok", "too_long"}
         and row.get("uid")
@@ -310,14 +313,17 @@ def main() -> None:
     manifest = {
         "schema_version": 1,
         "method": "plws",
-        "experiment": "window_first",
+        "experiment": "first_nonl" if kind == "first_nonl" else "window_first",
+        "lock_policy": kind,
         "model": args.model_tag,
         "datasets": datasets,
-        "seed": seed,
+        "seed": seed if len(row_seeds) == 1 else None,
+        "seeds": sorted(row_seeds),
         "mode": args.mode,
         "kind": kind,
         "k": args.k,
         "lexicon": args.lexicon,
+        "prompt_version": "default",
         "sampling_seed": args.sampling_seed,
         "protocol_id": args.protocol_id,
         "fullcot_generation_tokens": args.generation_tokens,
@@ -370,6 +376,14 @@ def main() -> None:
     visible = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
     tp_size = max(1, len(visible))
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    filtered = usable_bad_words(bad_words, tokenizer)
+    dropped = [word for word in bad_words if word not in set(filtered)]
+    bad_words = filtered
+    if dropped:
+        print(
+            f"{args.mode} {args.model_tag} drop unencodable bad_words={dropped}",
+            flush=True,
+        )
     generation_config = GenerationConfig.from_pretrained(
         model_path, trust_remote_code=True
     )
@@ -378,6 +392,15 @@ def main() -> None:
     top_k = getattr(generation_config, "top_k", -1)
     if top_k is None:
         top_k = -1
+    manifest.update(
+        {
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "decoding_source": "model generation_config.json",
+        }
+    )
+    atomic_write_json(manifest_path, manifest)
     print(
         f"{args.mode} {args.model_tag} tp={tp_size} model={model_path} "
         f"max_model_len={args.max_context} temperature={temperature} "
@@ -449,8 +472,28 @@ def main() -> None:
                                 "uid": job["uid"],
                                 "status": "too_long",
                                 "mode": args.mode,
+                                "experiment": job.get("experiment")
+                                or (
+                                    "first_nonl"
+                                    if kind == "first_nonl"
+                                    else "window_first"
+                                ),
+                                "lock_policy": job.get("lock_policy")
+                                or job.get("lock")
+                                or kind,
+                                "cohort": job.get("cohort"),
+                                "dataset": job.get("dataset"),
+                                "question_idx": job.get("question_idx"),
+                                "kind": job.get("kind") or kind,
+                                "window_kind": job.get("window_kind")
+                                or job.get("kind"),
+                                "first_window_kind": job.get("first_window_kind"),
+                                "first_window_step": job.get("first_window_step"),
+                                "delay_steps": job.get("delay_steps"),
                                 "n_left_tok": n_left,
                                 "protocol_id": args.protocol_id,
+                                "fullcot_generation_tokens": args.generation_tokens,
+                                "truncated_answer_fix_tokens": args.answer_tokens,
                                 "required_context": required_context,
                                 "max_model_len": args.max_context,
                             }
@@ -529,6 +572,24 @@ def main() -> None:
                                 "uid": job["uid"],
                                 "status": "too_long",
                                 "mode": args.mode,
+                                "experiment": job.get("experiment")
+                                or (
+                                    "first_nonl"
+                                    if kind == "first_nonl"
+                                    else "window_first"
+                                ),
+                                "lock_policy": job.get("lock_policy")
+                                or job.get("lock")
+                                or kind,
+                                "cohort": job.get("cohort"),
+                                "dataset": job.get("dataset"),
+                                "question_idx": job.get("question_idx"),
+                                "kind": job.get("kind") or kind,
+                                "window_kind": job.get("window_kind")
+                                or job.get("kind"),
+                                "first_window_kind": job.get("first_window_kind"),
+                                "first_window_step": job.get("first_window_step"),
+                                "delay_steps": job.get("delay_steps"),
                                 "cont_n": len(cont),
                                 "n_left_tok": n_left,
                                 "n_cont_tok": n_cont_tok,
@@ -538,6 +599,9 @@ def main() -> None:
                                 "natural_close": natural_close,
                                 "answer_budget": answer_budget,
                                 "protocol_id": args.protocol_id,
+                                "fullcot_generation_tokens": args.generation_tokens,
+                                "truncated_answer_fix_tokens": args.answer_tokens,
+                                "max_model_len": args.max_context,
                             }
                         )
                         + "\n"
@@ -594,7 +658,7 @@ def main() -> None:
                 answer_ready, answer_outs, strict=True
             ):
                 gen = out.outputs[0]
-                text = gen.text
+                text = sanitize_tokenizer_pieces(gen.text)
                 token_ids = list(gen.token_ids)
                 generated_text = f"{job.get('thought') or ''}{cont}\n</think>\n\n{text}"
                 task_type = get_task_type(job["dataset"])
@@ -607,10 +671,18 @@ def main() -> None:
                     "status": "ok",
                     "mode": args.mode,
                     "uid": job["uid"],
+                    "experiment": job.get("experiment")
+                    or ("first_nonl" if kind == "first_nonl" else "window_first"),
+                    "lock_policy": job.get("lock_policy") or job.get("lock") or kind,
+                    "cohort": job.get("cohort"),
                     "dataset": job["dataset"],
                     "question_idx": job["question_idx"],
                     "left_step": job.get("left_step", 0),
                     "kind": job.get("kind") or "full",
+                    "window_kind": job.get("window_kind") or job.get("kind"),
+                    "first_window_kind": job.get("first_window_kind"),
+                    "first_window_step": job.get("first_window_step"),
+                    "delay_steps": job.get("delay_steps"),
                     "lexicon": args.lexicon,
                     "confidence": job.get("confidence"),
                     "left_ok": job.get("left_ok", False),

@@ -14,67 +14,22 @@ set -euo pipefail
 
 AE="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 export PLWS_ROOT="$AE"
-PUMA_ROOT="${PUMA_ROOT:-$AE/../PUMA}"
+# shellcheck source=lib/runtime.sh
+ROOT="$AE"
+source "$AE/scripts/lib/runtime.sh"
+plws_runtime_init
 PUMA_ROOT="$(cd "$PUMA_ROOT" && pwd)"
-PY=/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python
-AE_PY="${AE_PY:-$AE/.venv/bin/python}"
-[[ -x "$AE_PY" ]] || AE_PY=python3
+AE_PY="${AE_PY:-$PY}"
 export PYTHONPATH="$AE/src${PYTHONPATH:+:$PYTHONPATH}"
 
 MODEL_TAG="${MODEL_TAG:?}"
 DATASET="${DATASET:?}"
 GPUS="${GPUS:?}"
-TP="${TP:-1}"
+TP="${TP:-${PLWS_TP:-1}}"
 SEED="${SEED:-42}"
 
-case "$MODEL_TAG" in
-  nemotron_8b)
-    MODEL=/mnt/d/lsj/models/Llama-3.1-Nemotron-Nano-8B-v1
-    CONF=Nemotron.conf
-    ;;
-  r1_14b)
-    # 单卡放不下 max_model_len=38000 的 KV（与 puma_offline 一致用 TP=2）
-    MODEL=/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-14B
-    CONF=DS-14B.conf
-    TP="${TP:-2}"
-    ;;
-  r1_32b)
-    MODEL=/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-32B
-    CONF=DS-32B.conf
-    TP="${TP:-2}"
-    ;;
-  qwen3_30b_a3b)
-    MODEL=/mnt/d/lsj/models/Qwen3-30B-A3B-Thinking-2507
-    CONF=Q30B-T.conf
-    TP="${TP:-2}"
-    ;;
-  qwq_32b)
-    MODEL=/mnt/d/lsj/models/QwQ-32B
-    CONF=DS-32B.conf
-    TP="${TP:-2}"
-    ;;
-  qwen3_32b)
-    MODEL=/mnt/d/lsj/models/Qwen3-32B
-    CONF=DS-32B.conf
-    TP="${TP:-2}"
-    ;;
-  r1_7b)
-    MODEL=/mnt/d/lsj/models/DeepSeek-R1-Distill-Qwen-7B
-    CONF=DS-7B.conf
-    ;;
-  qwen3_4b)
-    MODEL=/mnt/d/lsj/models/Qwen3-4B
-    CONF=DS-7B.conf
-    ;;
-  qwen3_8b)
-    MODEL=/mnt/d/lsj/models/Qwen3-8B
-    CONF=DS-7B.conf
-    ;;
-  *)
-    echo "unknown MODEL_TAG=$MODEL_TAG" >&2
-    exit 1
-    ;;
-esac
+MODEL="$(plws_model_path "$MODEL_TAG")"
+CONF="$(plws_align_conf "$MODEL_TAG")"
 
 if [[ "$SEED" != "42" ]]; then
   PUMA_DIR="${PUMA_DIR:-$AE/results/baselines/puma/puma_offline_${MODEL_TAG}_s${SEED}/$DATASET}"
@@ -173,13 +128,10 @@ printf '%s\n' \
 mv -f "$META_TMP" "$OUT/meta.txt"
 
 export VLLM_LENS_DISABLE=1
-export LD_LIBRARY_PATH="$(
-python3 - <<'PY'
-from pathlib import Path
-root = Path('/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm')
-print(':'.join(sorted({str(p) for p in (root/'.venv'/'lib').glob('**/nvidia/*/lib') if p.is_dir()})))
-PY
-):${LD_LIBRARY_PATH:-}"
+# 14B contest cells run TP=1. The upstream default 0.78 leaves ~6.0 GiB KV,
+# short of the 6.96 GiB needed for max_model_len=38000. Match PUMA official.
+export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
+plws_export_cuda_runtime
 
 "$AE_PY" - <<PY
 import json

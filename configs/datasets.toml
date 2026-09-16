@@ -24,3 +24,23 @@ primary = true
 slug = "aime25"
 expected_size = 30
 primary = true
+
+[datasets.aime26]
+slug = "aime26"
+expected_size = 30
+primary = true
+
+[datasets.brumo25]
+slug = "brumo25"
+expected_size = 30
+primary = true
+
+[datasets.hmmt25]
+slug = "hmmt25"
+expected_size = 30
+primary = true
+
+[datasets.amc23]
+slug = "amc23"
+expected_size = 40
+primary = true

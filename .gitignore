@@ -1,19 +1,49 @@
 # Local env and caches
 .venv/
+.env
+.env.*
+!.env.example
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
 .DS_Store
+.idea/
+.vscode/
 
 # Machine products and local inputs
 results/
 samples/
 logs/
-tables/
 figures/
+*.log
+*.pid
+*.part
+*.tmp
+
+# Human tables are generated locally; keep only the rental handoff snapshot.
+tables/*
+!tables/firstwin_wait/
+tables/firstwin_wait/*
+!tables/firstwin_wait/large_model_rental_missing.md
+
+# Never commit checkpoints or model weights accidentally.
+*.safetensors
+*.ckpt
+*.gguf
+*.pt
+*.pth
+pytorch_model*.bin
+model*.bin
+wandb/
 
 # Local progress, not source
 STATUS.md
 docs/log.md
+
+# Working paper memo; current results belong in STATUS/tables, not source docs.
+docs/paper_context_plws.md
