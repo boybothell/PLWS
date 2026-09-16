@@ -42,6 +42,25 @@ uv pip install --python "$PLWS_PY" -r requirements-dev.txt
 bash scripts/bootstrap_puma.sh
 ```
 
+### 云服务器如何拉远程
+
+不要改 `git config`，也不要把 `origin` 永久改成镜像。部分 AutoDL 机房
+`/etc/network_turbo` 会写「该地区学术加速暂未支持」，并提示 GitHub 走
+`https://ghproxy.com/`；实测该地址对 git 协议经常不返回分支。当前可用的是
+`ghproxy.net`：
+
+```bash
+# 只更新 origin/main，不改 remote URL
+git fetch https://ghproxy.net/https://github.com/boybothell/PLWS.git \
+  +main:refs/remotes/origin/main
+git rebase origin/main
+```
+
+直连 `github.com` 的 `git fetch` / `ls-remote` 若卡在 TCP，先换上面这条。
+`source /etc/network_turbo` 只在脚本真正导出 `http_proxy` 时有用；若脚本只
+打印「暂未支持」，不要指望它能拉 GitHub。用完镜像后继续让 `origin` 指向
+官方 `https://github.com/boybothell/PLWS.git`。
+
 每个 tmux 会话都设置：
 
 ```bash

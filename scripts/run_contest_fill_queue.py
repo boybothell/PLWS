@@ -609,7 +609,7 @@ def main() -> int:
                 {
                     "gpus": list(gpus),
                     "models": list(chosen_models),
-                    "seeds": [42, 0, 1, 123, 7],
+                    "seeds": list(chosen_seeds),
                     "datasets": list(chosen_datasets),
                     "counts": counts,
                     "pending": len(pending_rows),

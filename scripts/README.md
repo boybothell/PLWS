@@ -36,6 +36,8 @@ run_deer_official.sh
   不应直接带到租卡机。
 - `launch_*`、`stop_*`、`wait_*`：机器相关 tmux 包装；正式租卡命令写在
   `docs/RENTAL_SERVER.md`。
+- 云服务器拉远程：见 `docs/RENTAL_SERVER.md`「云服务器如何拉远程」。当前
+  AutoDL 用 `ghproxy.net` 做 `git fetch`，不要改 `origin` URL。
 
 主表协议只能使用 `puma-fullcot-32k-v2`、`firstwin`、`lexicon=core`。旧
 low/mix/high 分跑、16K greedy DEER、历史 leftover 变体不得混入主表。
