@@ -1,0 +1,18 @@
+---
+description: 临时脚本进 tmp/，正式改动才进仓库
+alwaysApply: true
+---
+
+# 临时文件与正式改动
+
+- 本机一次性脚本、路径备忘、核对草稿、AutoDL 绝对路径只放 `tmp/`。
+  `tmp/` 已被 gitignore，禁止再写进 `scripts/`、`src/`、`docs/`。
+- 当前工作树里的 `PLWS_DATA_ROOT` / `dataset_path` / `.env` 读取是正式租卡
+  接线，不是临时脚本，留在原文件。机器路径只写 gitignored 的 `.env` 或 `tmp/`。
+- 不要为租卡新建 `download_*.py`、`reorder_*.py`、`launch_<模型>_<GPU>.sh`。
+  数据用 `scripts/bootstrap_puma.sh`（固定 commit + patch）；启动用手册里的
+  tmux + 现有 cell/queue。
+- 预检只数条数，不能当顺序依据。不要手工下载同名官方集覆盖
+  `PLWS_DATA_ROOT` 或 `PUMA/data`。
+- 拿不准是临时还是正式时：先放 `tmp/`。只有会被别的机器复用、且已参数化的
+  入口，才升到 `scripts/` 并在 `scripts/README.md` 登记。
