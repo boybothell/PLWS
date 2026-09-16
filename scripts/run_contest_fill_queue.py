@@ -17,6 +17,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from plws.runtime import dataset_path, load_dotenv  # noqa: E402
+
+load_dotenv(ROOT)
 from plws.contest import (  # noqa: E402
     FILL_DATASETS,
     FILL_MODELS,
@@ -514,7 +517,7 @@ def validate(
             raise FileNotFoundError(script)
     puma_root = Path(os.environ.get("PUMA_ROOT", ROOT.parent / "PUMA"))
     for dataset in datasets:
-        data = puma_root / "data" / f"{dataset}_test.jsonl"
+        data = dataset_path(dataset, puma_root)
         if not data.is_file():
             raise FileNotFoundError(data)
 

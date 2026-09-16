@@ -15,7 +15,7 @@ MODEL="${MODEL:-$(plws_model_path "$MODEL_TAG")}"
 OUT="${OUT:-$ROOT/results/baselines/deer/puma_fullcot_32k_v2/$MODEL_TAG/$DATASET/seed_$SEED}"
 LIMIT="${LIMIT:-0}"
 RESULT="$OUT/deer.jsonl"
-DATA="$PUMA_ROOT/data/${DATASET}_test.jsonl"
+DATA="${PLWS_DATA_ROOT}/${DATASET}_test.jsonl"
 
 [[ -f "$DATA" ]] || { echo "ERROR: missing dataset $DATA" >&2; exit 1; }
 mkdir -p "$OUT"
@@ -84,7 +84,7 @@ if [[ "$LIMIT" -gt 0 ]]; then
 fi
 "$PY" baselines/deer/vllm_deer.py \
   --model_name_or_path "$MODEL" \
-  --dataset_dir "$PUMA_ROOT/data" \
+  --dataset_dir "$PLWS_DATA_ROOT" \
   --dataset "$DATASET" \
   --output_path "$tmp" \
   --seed "$SEED" \

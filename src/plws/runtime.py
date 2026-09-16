@@ -7,7 +7,31 @@ import sys
 from pathlib import Path
 
 DEFAULT_MODELS_ROOT = Path("/mnt/d/lsj/models")
-MODELS_ROOT = Path(os.environ.get("PLWS_MODELS_ROOT", DEFAULT_MODELS_ROOT))
+
+
+def load_dotenv(root: str | Path | None = None) -> Path | None:
+    """Load repo ``.env`` without overwriting variables already in the environment."""
+
+    base = Path(root) if root is not None else Path(
+        os.environ.get("PLWS_ROOT", Path(__file__).resolve().parents[2])
+    )
+    path = base / ".env"
+    if not path.is_file():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'").strip('"'))
+    return path
+
+
+def models_root() -> Path:
+    return Path(os.environ.get("PLWS_MODELS_ROOT", DEFAULT_MODELS_ROOT))
+
+
+MODELS_ROOT = models_root()
 VLLM_VENV = Path(os.environ.get("PLWS_VLLM_VENV", sys.prefix))
 
 MODEL_DIRS = {
@@ -32,7 +56,27 @@ def model_path(model_tag: str) -> Path:
         directory = MODEL_DIRS[model_tag]
     except KeyError as exc:
         raise ValueError(f"unknown model tag: {model_tag}") from exc
-    return MODELS_ROOT / directory
+    return models_root() / directory
+
+
+def data_root(puma_root: str | Path | None = None) -> Path:
+    """Resolve contest jsonl under ``PLWS_DATA_ROOT`` or ``<PUMA>/data``."""
+
+    configured = os.environ.get("PLWS_DATA_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if puma_root is not None:
+        return Path(puma_root).expanduser().resolve() / "data"
+    env_puma = os.environ.get("PUMA_ROOT")
+    if env_puma:
+        return Path(env_puma).expanduser().resolve() / "data"
+    return Path(__file__).resolve().parents[2].parent / "PUMA" / "data"
+
+
+def dataset_path(dataset: str, puma_root: str | Path | None = None) -> Path:
+    """Return ``{slug}_test.jsonl`` for a contest dataset."""
+
+    return data_root(puma_root) / f"{dataset}_test.jsonl"
 
 
 def nvidia_ld_library_path(current: str | None = None) -> str:

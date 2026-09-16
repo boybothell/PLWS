@@ -39,7 +39,7 @@ if [[ "$SEED" != "42" ]]; then
   LEGACY_TAG="${LEGACY_TAG}_s${SEED}"
 fi
 LEGACY_LINK="$ROOT/samples/$LEGACY_TAG"
-BENCH="$PUMA_ROOT/data/${DATASET}_test.jsonl"
+BENCH="$PLWS_DATA_ROOT/${DATASET}_test.jsonl"
 
 if [[ ! -f "$BENCH" ]]; then
   echo "ERROR: missing benchmark $BENCH"

@@ -20,7 +20,7 @@ from plws.protocol import (
     PROTOCOL_ID,
     TRUNCATED_ANSWER_FIX_TOKENS,
 )
-from plws.runtime import model_path
+from plws.runtime import dataset_path, model_path
 
 FIVE_MODELS = ("r1_7b", "nemotron_8b", "r1_14b", "qwen3_4b", "qwen3_8b")
 EIGHT_MODEL = "qwen3_8b"
@@ -101,7 +101,7 @@ def puma_repo(plws_root: Path) -> Path:
 
 
 def puma_data_path(plws_root: Path, dataset: str) -> Path:
-    return puma_repo(plws_root) / "data" / f"{dataset}_test.jsonl"
+    return dataset_path(dataset, puma_repo(plws_root))
 
 
 def model_lane(model: str) -> str:

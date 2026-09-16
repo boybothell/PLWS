@@ -51,7 +51,9 @@ export PLWS_PY=/path/to/vllm-env/bin/python
 ```
 
 模型目录名见 `configs/models.toml`。模型根目录可以通过
-`PLWS_MODELS_ROOT` 修改，不要求复刻本机绝对路径。
+`PLWS_MODELS_ROOT` 修改，不要求复刻本机绝对路径。评测 jsonl 可通过
+`PLWS_DATA_ROOT` 指向 `{slug}_test.jsonl`。本机绝对路径写进 gitignored 的
+`.env` 或 `tmp/`，不要写进本手册。
 
 ## 2. 同步断点
 

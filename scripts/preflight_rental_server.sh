@@ -18,7 +18,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from plws.runtime import model_path
+from plws.runtime import dataset_path, model_path
 
 root, puma = map(Path, sys.argv[1:3])
 models = ("qwen3_30b_a3b", "r1_32b", "qwen3_32b", "qwq_32b")
@@ -64,22 +64,29 @@ else:
 
 for slug, expected in datasets.items():
     name = f"{slug}_test.jsonl"
-    path = puma / "data" / name
     pinned = root / "data" / name
-    if not path.is_file():
-        errors.append(f"missing dataset: {path}")
-        continue
-    actual = sum(1 for line in path.open(encoding="utf-8") if line.strip())
-    if actual != expected:
-        errors.append(f"dataset size mismatch: {path} ({actual} != {expected})")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    runtime = dataset_path(slug, puma)
+    puma_data = puma / "data" / name
     expected_digest = checksums.get(name)
     if expected_digest is None:
         errors.append(f"dataset not pinned: {name}")
-    elif digest != expected_digest:
-        errors.append(f"dataset hash mismatch: {path}")
-    if pinned.is_file() and path.read_bytes() != pinned.read_bytes():
-        errors.append(f"dataset differs from repo pin: {path}")
+    seen: set[Path] = set()
+    for path in (pinned, runtime, puma_data):
+        resolved = path.resolve() if path.exists() else path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not path.is_file():
+            errors.append(f"missing dataset: {path}")
+            continue
+        actual = sum(1 for line in path.open(encoding="utf-8") if line.strip())
+        if actual != expected:
+            errors.append(f"dataset size mismatch: {path} ({actual} != {expected})")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if expected_digest and digest != expected_digest:
+            errors.append(f"dataset hash mismatch: {path}")
+        if pinned.is_file() and path != pinned and path.read_bytes() != pinned.read_bytes():
+            errors.append(f"dataset differs from repo pin: {path}")
 
 for module in ("torch", "transformers", "vllm", "plws.contest"):
     try:

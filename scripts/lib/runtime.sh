@@ -3,6 +3,12 @@
 
 plws_runtime_init() {
   local fallback="/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python"
+  if [[ -f "${ROOT:-}/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$ROOT/.env"
+    set +a
+  fi
   if [[ -n "${PLWS_PY:-}" ]]; then
     PY="$PLWS_PY"
   elif [[ -n "${PY:-}" ]]; then
@@ -19,7 +25,8 @@ plws_runtime_init() {
 
   PLWS_MODELS_ROOT="${PLWS_MODELS_ROOT:-/mnt/d/lsj/models}"
   PUMA_ROOT="${PUMA_ROOT:-$ROOT/../PUMA}"
-  export PY PLWS_PY="$PY" PLWS_MODELS_ROOT PUMA_ROOT
+  PLWS_DATA_ROOT="${PLWS_DATA_ROOT:-$PUMA_ROOT/data}"
+  export PY PLWS_PY="$PY" PLWS_MODELS_ROOT PUMA_ROOT PLWS_DATA_ROOT
 }
 
 plws_model_path() {

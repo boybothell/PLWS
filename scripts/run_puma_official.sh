@@ -26,7 +26,7 @@ else
   PUMA_DIR="${PUMA_DIR:-$AE/results/baselines/puma/puma_offline_${MODEL_TAG}/$DATASET}"
 fi
 SAMPLE="${SAMPLE:-$AE/samples/$MODEL_TAG/$DATASET/seed_${SEED}}"
-BENCH="${BENCH:-$PUMA_ROOT/data/${DATASET}_test.jsonl}"
+BENCH="${BENCH:-$PLWS_DATA_ROOT/${DATASET}_test.jsonl}"
 
 mkdir -p "$PUMA_DIR"
 RUN_FINISHED=0

@@ -42,6 +42,9 @@ pytorch_model*.bin
 model*.bin
 wandb/
 
+# Machine-local scratch: one-off scripts, notes, path dumps. Never official.
+/tmp/
+
 # Local progress, not source
 STATUS.md
 docs/log.md
