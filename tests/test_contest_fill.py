@@ -25,6 +25,7 @@ from plws.contest import (
     fill_legacy_plws_complete,
     fill_needs_prereq,
     fill_task_complete,
+    filter_fill_tasks,
     idle_contest_gpus,
     is_contest_fill_queue_cmd,
     log_loaded_after_latest_start,
@@ -174,6 +175,32 @@ class ContestFillTest(unittest.TestCase):
         self.assertEqual(MODELS["qwen3_8b"], "/mnt/d/lsj/models/Qwen3-8B")
         self.assertEqual(prereq_task("qwen3_8b", "brumo25", 42).phase, "followon_prereq")
         self.assertEqual(plws_task("qwen3_8b", "amc23", 7).phase, "followon_plws")
+
+    def test_filter_fill_tasks_keeps_requested_ids(self) -> None:
+        pending = [
+            prereq_task("r1_1p5b", "math-500", 0),
+            plws_task("r1_1p5b", "math-500", 42),
+            prereq_task("r1_1p5b", "gpqa-diamond", 0),
+            plws_task("r1_1p5b", "gpqa-diamond", 0),
+        ]
+        kept = filter_fill_tasks(
+            pending,
+            (
+                "plws__r1_1p5b__math-500__s42",
+                "prereq__r1_1p5b__gpqa-diamond__s0",
+                "plws__r1_1p5b__gpqa-diamond__s0",
+            ),
+        )
+        self.assertEqual(
+            [task.task_id for task in kept],
+            [
+                "plws__r1_1p5b__gpqa-diamond__s0",
+                "plws__r1_1p5b__math-500__s42",
+                "prereq__r1_1p5b__gpqa-diamond__s0",
+            ],
+        )
+        with self.assertRaisesRegex(ValueError, "unknown fill task ids"):
+            filter_fill_tasks(pending, ["plws__r1_1p5b__olympiadbench__s42"])
 
     def test_fill_adds_r1_distill_followons_after_14b(self) -> None:
         from plws.contest import gpu_count
