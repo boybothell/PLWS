@@ -33,8 +33,10 @@ from plws.contest import (  # noqa: E402
     engine_loaded_from_logs,
     engine_ready_for_next_cold_start,
     fill_dispatch,
+    fill_fullcot_complete,
     fill_task_complete,
     filter_fill_tasks,
+    fullcot_only_tasks,
     first_open_phase,
     idle_contest_gpus,
     is_task_log_name,
@@ -59,6 +61,17 @@ STATUS_PATH = RUN_ROOT / "status.json"
 EVENTS_PATH = RUN_ROOT / "events.jsonl"
 DEFAULT_GPUS = ("0", "1", "2", "3")
 PATHS = PLWSPaths(ROOT)
+
+
+def _prereq_or_plws_done(paths: PLWSPaths, task: ContestTask) -> tuple[bool, str]:
+    return fill_task_complete(paths, task)
+
+
+def _fullcot_done(paths: PLWSPaths, task: ContestTask) -> tuple[bool, str]:
+    return fill_fullcot_complete(paths, task.model, task.dataset, task.seed)
+
+
+_TASK_IS_DONE = _prereq_or_plws_done
 
 
 @dataclass
@@ -448,6 +461,10 @@ def launch(task: ContestTask, assigned: tuple[str, ...], attempt: int) -> Runnin
     )
 
 
+def task_is_done(task: ContestTask) -> tuple[bool, str]:
+    return _TASK_IS_DONE(PATHS, task)
+
+
 def write_status(
     pending: list[ContestTask],
     running: dict[int, Running],
@@ -459,7 +476,7 @@ def write_status(
 ) -> None:
     rows = []
     for item in running.values():
-        complete, reason = fill_task_complete(PATHS, item.task)
+        complete, reason = task_is_done(item.task)
         rows.append(
             {
                 "task_id": item.task.task_id,
@@ -555,7 +572,16 @@ def main() -> int:
         action="store_true",
         help="Allow a second fill lane while another contest-fill queue is live.",
     )
+    parser.add_argument(
+        "--fullcot-only",
+        action="store_true",
+        help="Sample Full-CoT only, skip PUMA/dense/PLWS, then exit.",
+    )
     args = parser.parse_args()
+    global _TASK_IS_DONE
+    if args.fullcot_only:
+        os.environ["FULLCOT_ONLY"] = "1"
+        _TASK_IS_DONE = _fullcot_done
     gpus = tuple(item.strip() for item in args.gpus.split(",") if item.strip())
     if args.models.strip():
         chosen_models = tuple(
@@ -591,36 +617,39 @@ def main() -> int:
             tasks,
             (item.strip() for item in args.task_ids.split(",") if item.strip()),
         )
+    if args.fullcot_only:
+        tasks = fullcot_only_tasks(tasks)
 
     if not args.dry_run:
         if not args.allow_parallel and contest_fill_queue_alive(
             exclude_pid=os.getpid()
         ):
             raise RuntimeError("another contest-fill queue is already running")
-        for model in chosen_models:
-            for dataset in chosen_datasets:
-                for seed in chosen_seeds:
-                    if ensure_firstwin_jobs(PATHS, model, dataset, seed):
-                        event(
-                            "ensured_firstwin",
-                            model=model,
-                            dataset=dataset,
-                            seed=seed,
-                        )
-                    if needs_cpu_export(PATHS, model, dataset, seed):
-                        start_cpu_export(model, dataset, seed)
-                        event(
-                            "exported_jobs",
-                            model=model,
-                            dataset=dataset,
-                            seed=seed,
-                        )
+        if not args.fullcot_only:
+            for model in chosen_models:
+                for dataset in chosen_datasets:
+                    for seed in chosen_seeds:
+                        if ensure_firstwin_jobs(PATHS, model, dataset, seed):
+                            event(
+                                "ensured_firstwin",
+                                model=model,
+                                dataset=dataset,
+                                seed=seed,
+                            )
+                        if needs_cpu_export(PATHS, model, dataset, seed):
+                            start_cpu_export(model, dataset, seed)
+                            event(
+                                "exported_jobs",
+                                model=model,
+                                dataset=dataset,
+                                seed=seed,
+                            )
 
     counts = summarize(tasks)
     if args.dry_run:
         pending_rows = []
         for task in tasks:
-            complete, reason = fill_task_complete(PATHS, task)
+            complete, reason = task_is_done(task)
             if not complete:
                 pending_rows.append(f"{task.phase}\t{task.task_id}\t{reason}")
         print(
@@ -652,7 +681,7 @@ def main() -> int:
         if task.task_id in claimed:
             event("task_adopted", task_id=task.task_id)
             continue
-        complete, reason = fill_task_complete(PATHS, task)
+        complete, reason = task_is_done(task)
         if complete:
             succeeded.append(task.task_id)
             event("task_reconciled", task_id=task.task_id, reason=reason)
@@ -682,7 +711,7 @@ def main() -> int:
             finished = [pid for pid in running if not pid_alive(pid)]
             for pid in finished:
                 item = running.pop(pid)
-                complete, reason = fill_task_complete(PATHS, item.task)
+                complete, reason = task_is_done(item.task)
                 if complete:
                     succeeded.append(item.task.task_id)
                     event(

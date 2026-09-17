@@ -108,6 +108,11 @@ puma_ready() {
   [[ -f "$PUMA_DIR/statistics.json" && -f "$PUMA_DIR/prefixed_answers.json" ]]
 }
 
+if [[ "${FULLCOT_ONLY:-0}" == "1" ]] && sample_matches_protocol && [[ -f "$SAMPLE/answers.json" ]]; then
+  echo "[contest-prereq] skip complete fullcot-only $MODEL_TAG $DATASET seed=$SEED $PROTOCOL_ID"
+  exit 0
+fi
+
 if puma_ready && jobs_ready && sample_matches_protocol; then
   echo "[contest-prereq] skip complete $MODEL_TAG $DATASET seed=$SEED $PROTOCOL_ID"
   exit 0
@@ -130,6 +135,22 @@ if ! sample_matches_protocol; then
 fi
 
 echo "[contest-prereq] start $(date -Is) $MODEL_TAG $DATASET seed=$SEED gpu=$GPU $PROTOCOL_ID gen=$MAX_TOKENS"
+
+if [[ "${FULLCOT_ONLY:-0}" == "1" ]]; then
+  if ! sample_matches_protocol || [[ ! -f "$SAMPLE/answers.json" ]]; then
+    if ! may_sample_fullcot; then
+      echo "ERROR: refused to regenerate Full-CoT for $MODEL_TAG $DATASET seed=$SEED" >&2
+      exit 2
+    fi
+    PLWS_ROOT="$ROOT" MODEL="$MODEL" MODEL_TAG="$MODEL_TAG" \
+      ALIGN_CONF="$ALIGN_CONF" DATASET="$DATASET" SEED="$SEED" GPU="$GPU" \
+      PROTOCOL_ID="$PROTOCOL_ID" MAX_TOKENS="$MAX_TOKENS" ANSWER_FIX="$ANSWER_FIX" \
+      PROMPT_RESERVE="$PROMPT_RESERVE" MAX_MODEL_LEN="$MAX_MODEL_LEN" \
+      bash "$ROOT/scripts/run_puma_aligned_sample.sh"
+  fi
+  echo "[contest-prereq] fullcot-only stop $MODEL_TAG $DATASET seed=$SEED"
+  exit 0
+fi
 
 if puma_ready && sample_matches_protocol; then
   echo "[contest-prereq] reuse complete PUMA $PUMA_DIR"

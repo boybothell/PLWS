@@ -715,7 +715,7 @@ diff --git a/puma/gen_prefixed_answers.py b/puma/gen_prefixed_answers.py
 index 8955579..f10e520 100644
 --- a/puma/gen_prefixed_answers.py
 +++ b/puma/gen_prefixed_answers.py
-@@ -210,9 +210,18 @@ def process_questions_with_prefixes(
+@@ -210,9 +210,26 @@ def process_questions_with_prefixes(
          "model": model_name,
          "trust_remote_code": True,
          "tensor_parallel_size": tensor_parallel_size,
@@ -726,6 +726,12 @@ index 8955579..f10e520 100644
 +            os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.78")
 +        ),
      }
++    if os.environ.get("VLLM_MAX_NUM_SEQS"):
++        llm_kwargs["max_num_seqs"] = int(os.environ["VLLM_MAX_NUM_SEQS"])
++    if os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS"):
++        llm_kwargs["max_num_batched_tokens"] = int(
++            os.environ["VLLM_MAX_NUM_BATCHED_TOKENS"]
++        )
 +    # L40 / Ada: custom all-reduce dies in CUDA-graph profiling under TP>1
 +    # (same guard as run_vllm.py).
 +    if tensor_parallel_size > 1 or os.environ.get(
@@ -908,7 +914,7 @@ index cc85f0e..61b8619 100644
      """
      logger.info(f"Loading vLLM model {model_name}")
      # Build LLM kwargs - logprobs_mode is an engine argument for vLLM >= 0.10.x
-@@ -285,14 +387,24 @@ def process_questions_with_prefixes_vllm(
+@@ -285,14 +387,32 @@ def process_questions_with_prefixes_vllm(
          "model": model_name,
          "trust_remote_code": True,
          "tensor_parallel_size": tensor_parallel_size,
@@ -919,6 +925,12 @@ index cc85f0e..61b8619 100644
 +            os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.78")
 +        ),
      }
++    if os.environ.get("VLLM_MAX_NUM_SEQS"):
++        llm_kwargs["max_num_seqs"] = int(os.environ["VLLM_MAX_NUM_SEQS"])
++    if os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS"):
++        llm_kwargs["max_num_batched_tokens"] = int(
++            os.environ["VLLM_MAX_NUM_BATCHED_TOKENS"]
++        )
 +    # L40 / Ada: custom all-reduce dies in CUDA-graph profiling under TP>1
 +    # (same guard as run_vllm.py).
 +    if tensor_parallel_size > 1 or os.environ.get(
@@ -1107,7 +1119,7 @@ index dc41c0b..20d8de4 100644
      return parser.parse_args()
  
  
-@@ -200,14 +206,29 @@ def main():
+@@ -200,14 +206,42 @@ def main():
      model_type = get_model_type(model_name)
      print(f"Detected model type: {model_type}")
  
@@ -1136,6 +1148,19 @@ index dc41c0b..20d8de4 100644
 +        extra_kwargs["enforce_eager"] = True
 +        print("enforce_eager=True (env)")
 +    gpu_mem = float(os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.85"))
++    if os.environ.get("VLLM_MAX_NUM_SEQS"):
++        extra_kwargs["max_num_seqs"] = int(os.environ["VLLM_MAX_NUM_SEQS"])
++    if os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS"):
++        extra_kwargs["max_num_batched_tokens"] = int(
++            os.environ["VLLM_MAX_NUM_BATCHED_TOKENS"]
++        )
++    packing = ""
++    if extra_kwargs.get("max_num_seqs") or extra_kwargs.get("max_num_batched_tokens"):
++        packing = (
++            f" max_num_seqs={extra_kwargs.get('max_num_seqs', 'default')}"
++            f" max_num_batched_tokens={extra_kwargs.get('max_num_batched_tokens', 'default')}"
++        )
++    print(f"gpu_memory_utilization={gpu_mem}{packing}")
 +
      if "70B" not in model_name:
          llm = LLM(

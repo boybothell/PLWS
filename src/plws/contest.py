@@ -86,10 +86,11 @@ OFFICIAL_NEW_DATASETS = (
     "gpqa-diamond",
     "aime25",
     "hmmt25",
+    "amc23",
 )
 OFFICIAL_FIRST_SEEDS = (42, 0, 1)
 OFFICIAL_LATER_SEEDS = (123, 7)
-NO_NEW_WORK_DATASETS = ("aime24", "aime26", "brumo25", "amc23")
+NO_NEW_WORK_DATASETS = ("aime24", "aime26", "brumo25")
 PUBLISHED_LEGACY_PLWS = frozenset(
     ("r1_7b", "amc23", seed) for seed in (42, 0, 1, 123)
 )
@@ -992,6 +993,25 @@ def filter_fill_tasks(
     if missing:
         raise ValueError(f"unknown fill task ids: {missing}")
     return sorted((known[task_id] for task_id in wanted), key=fill_sort_key)
+
+
+def fullcot_only_tasks(tasks: Iterable[ContestTask]) -> list[ContestTask]:
+    """Keep prereq cells only. Full-CoT-only fill never launches PLWS."""
+
+    return sorted(
+        (task for task in tasks if task.kind == "prereq"),
+        key=fill_sort_key,
+    )
+
+
+def fill_fullcot_complete(
+    paths: PLWSPaths, model: str, dataset: str, seed: int
+) -> tuple[bool, str]:
+    if not sample_answers_path(paths, model, dataset, seed).is_file():
+        return False, "fullcot answers missing"
+    if not sample_matches_protocol(paths, model, dataset, seed):
+        return False, "fullcot protocol mismatch"
+    return True, "fullcot ready"
 
 
 def task_complete(paths: PLWSPaths, task: ContestTask) -> tuple[bool, str]:

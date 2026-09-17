@@ -1,15 +1,15 @@
 # 租卡服务器运行手册
 
 本手册只覆盖四个大模型的 PUMA、PLWS、DEER。
-现行新跑是五集 × 第一波三个 seed：
+现行新跑是六集 × 第一波三个 seed：
 
 ```text
-DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,hmmt25
+DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,hmmt25,amc23
 SEEDS=42,0,1
 ```
 
-`123` / `7` 等第一波齐了再排。不要新开 `aime24` / `aime26` / `brumo25` /
-`amc23`。仓库里仍钉着九份 jsonl，只为续跑已有产物和校验哈希，不是新队列范围。
+`123` / `7` 等第一波齐了再排。不要新开 `aime24` / `aime26` / `brumo25`。
+仓库里仍钉着九份 jsonl；其中这三份只为续跑已有产物和校验哈希。
 当前缺格见
 [`large_model_rental_missing.md`](../tables/firstwin_wait/large_model_rental_missing.md)，
 机器清单见
@@ -38,7 +38,7 @@ uv pip install --python "$PLWS_PY" -r requirements-dev.txt
 # 从固定上游提交创建带 puma-fullcot-32k-v2 补丁的 PUMA，
 # 并把仓库自带的九份评测 jsonl 原样装进 PUMA/data 后校验 SHA256。
 # clone/pull 后数据已经齐全；不要另下 Hugging Face 或同名官方集覆盖。
-# 新队列只用其中五集；其余四份只服务已有产物续跑/核验。
+# 新队列用现行六集；其余三份只服务已有产物续跑/核验。
 bash scripts/bootstrap_puma.sh
 ```
 
@@ -119,7 +119,7 @@ bash scripts/preflight_rental_server.sh
 它检查四个模型、PUMA 补丁、关键入口和实际 Python import，并按仓库
 `data/SHA256SUMS` 校验九份锁定数据、`$PUMA_ROOT/data/` 及运行时实际数据路径。
 这会同时锁定内容与题序，不再只检查条数。预检失败时不要启动生成。
-新队列仍然只用现行五集。
+新队列用现行六集。
 
 ## 4. 运行一个 cell
 
@@ -158,7 +158,7 @@ PUMA/PLWS 多卡任务复用通用 fill queue，不再为模型或 GPU 编号复
 
 ```bash
 MODELS=qwen3_30b_a3b,r1_32b,qwen3_32b,qwq_32b
-DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,hmmt25
+DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,hmmt25,amc23
 SEEDS=42,0,1
 
 tmux new-session -d -s plws-large-fill \
@@ -170,9 +170,13 @@ tmux new-session -d -s plws-large-fill \
    VLLM_MAX_NUM_BATCHED_TOKENS=8192 \
    '$PLWS_PY' scripts/run_contest_fill_queue.py \
    --gpus 0,1,2,3 --models '$MODELS' \
-   --datasets '$DATASETS' --seeds '$SEEDS'"
+    --datasets '$DATASETS' --seeds '$SEEDS'"
 tmux ls
 ```
+
+只采齐 Full-CoT、不跑 PUMA / dense / PLWS 时，在同一条命令末尾加
+`--fullcot-only`。格子已有规范 `answers.json` 的会直接记成功；队列在全部
+sample 齐后退出。
 
 该队列按规范产物重扫、动态领卡并串行冷加载。`PLWS_LARGE_TP=1` 只适用于实际
 能容纳 38K host 的 80 GB 卡；否则改为 2，并保证 GPU 池能分成双卡 lane。

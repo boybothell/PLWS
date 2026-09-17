@@ -22,10 +22,12 @@ from plws.contest import (
     engine_ready_for_next_cold_start,
     dual_lane_cap,
     fill_dispatch,
+    fill_fullcot_complete,
     fill_legacy_plws_complete,
     fill_needs_prereq,
     fill_task_complete,
     filter_fill_tasks,
+    fullcot_only_tasks,
     idle_contest_gpus,
     is_contest_fill_queue_cmd,
     log_loaded_after_latest_start,
@@ -108,13 +110,14 @@ class ContestFillTest(unittest.TestCase):
                 "gpqa-diamond",
                 "aime25",
                 "hmmt25",
+                "amc23",
             ),
         )
         self.assertEqual(OFFICIAL_FIRST_SEEDS, (42, 0, 1))
         self.assertEqual(OFFICIAL_LATER_SEEDS, (123, 7))
-        self.assertEqual(
-            NO_NEW_WORK_DATASETS, ("aime24", "aime26", "brumo25", "amc23")
-        )
+        self.assertEqual(NO_NEW_WORK_DATASETS, ("aime24", "aime26", "brumo25"))
+        self.assertIn("amc23", OFFICIAL_NEW_DATASETS)
+        self.assertNotIn("amc23", NO_NEW_WORK_DATASETS)
         tasks = build_fill_tasks(
             self.paths,
             models=("r1_32b",),
@@ -126,6 +129,19 @@ class ContestFillTest(unittest.TestCase):
         self.assertEqual(seeds, {42, 0, 1})
         self.assertEqual(datasets, set(OFFICIAL_NEW_DATASETS))
         self.assertNotIn("aime24", datasets)
+        self.assertIn("amc23", datasets)
+        self.assertEqual(
+            {
+                task.task_id
+                for task in fullcot_only_tasks(tasks)
+                if task.dataset == "amc23"
+            },
+            {
+                "prereq__r1_32b__amc23__s42",
+                "prereq__r1_32b__amc23__s0",
+                "prereq__r1_32b__amc23__s1",
+            },
+        )
 
     def test_cpu_export_respects_selected_seeds(self) -> None:
         model = "qwen3_30b_a3b"
@@ -201,6 +217,38 @@ class ContestFillTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "unknown fill task ids"):
             filter_fill_tasks(pending, ["plws__r1_1p5b__olympiadbench__s42"])
+
+    def test_fullcot_only_keeps_prereq_and_needs_answers(self) -> None:
+        pending = [
+            prereq_task("qwq_32b", "math-500", 0),
+            plws_task("qwq_32b", "math-500", 0),
+            prereq_task("qwq_32b", "gpqa-diamond", 1),
+        ]
+        kept = fullcot_only_tasks(pending)
+        self.assertEqual(
+            [task.task_id for task in kept],
+            [
+                "prereq__qwq_32b__math-500__s0",
+                "prereq__qwq_32b__gpqa-diamond__s1",
+            ],
+        )
+        self.assertEqual(
+            fill_fullcot_complete(self.paths, "qwq_32b", "math-500", 0),
+            (False, "fullcot answers missing"),
+        )
+        self._sample_ready("qwq_32b", "math-500", 0)
+        self.assertEqual(
+            fill_fullcot_complete(self.paths, "qwq_32b", "math-500", 0),
+            (False, "fullcot answers missing"),
+        )
+        self._write(
+            self.paths.root / "samples/qwq_32b/math-500/seed_0/answers.json",
+            [{"question_idx": 0}],
+        )
+        self.assertEqual(
+            fill_fullcot_complete(self.paths, "qwq_32b", "math-500", 0),
+            (True, "fullcot ready"),
+        )
 
     def test_fill_adds_r1_distill_followons_after_14b(self) -> None:
         from plws.contest import gpu_count
@@ -417,6 +465,7 @@ class ContestFillTest(unittest.TestCase):
         self.assertNotIn("contest_blocked_phases", text)
         self.assertNotIn("run_matrix_plws_cell.sh", text)
         self.assertIn("--datasets", text)
+        self.assertIn("--fullcot-only", text)
         self.assertIn("PUMA_ROOT", text)
         self.assertNotIn("FORBIDDEN_GPUS", text)
         fill = (ROOT / "scripts" / "run_contest_fill_queue.py").read_text()
@@ -432,12 +481,19 @@ class ContestFillTest(unittest.TestCase):
         self.assertIn("plws_model_path", prereq)
         self.assertIn("plws_align_conf", prereq)
         self.assertIn("CONTEST_RUN_ROOT", prereq)
+        self.assertIn("FULLCOT_ONLY", prereq)
         self.assertIn('VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"', prereq)
         dense = (ROOT / "scripts" / "run_dense_trials_model.sh").read_text()
         self.assertIn(
             'VLLM_GPU_MEMORY_UTILIZATION="${DENSE_VLLM_GPU_MEMORY_UTILIZATION:-0.90}"',
             dense,
         )
+        leftover = (ROOT / "scripts" / "score_leftover_suppress.py").read_text()
+        self.assertIn('os.environ.get("VLLM_MAX_NUM_SEQS")', leftover)
+        self.assertIn('os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS")', leftover)
+        puma_patch = (ROOT / "vendor" / "patches" / "puma-fullcot-32k-v2.patch").read_text()
+        self.assertIn('os.environ.get("VLLM_MAX_NUM_SEQS")', puma_patch)
+        self.assertIn('os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS")', puma_patch)
         self.assertTrue(
             is_contest_fill_queue_cmd(
                 ["python", "/repo/scripts/run_contest_fill_queue.py", "--gpus", "0,1,2,3"]
