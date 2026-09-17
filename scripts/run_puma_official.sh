@@ -18,7 +18,7 @@ MODEL_TAG="${MODEL_TAG:?set MODEL_TAG}"
 DATASET="${DATASET:?set DATASET}"
 SEED="${SEED:-42}"
 GPU="${GPU:-0}"
-ALIGN_CONF="${ALIGN_CONF:-DS-7B.conf}"
+ALIGN_CONF="${ALIGN_CONF:-$(plws_align_conf "$MODEL_TAG")}"
 
 if [[ "$SEED" != "42" ]]; then
   PUMA_DIR="${PUMA_DIR:-$AE/results/baselines/puma/puma_offline_${MODEL_TAG}_s${SEED}/$DATASET}"
@@ -85,50 +85,14 @@ if [[ ! -f "$PUMA_DIR/answers.json" ]]; then
   mv -f "$SAMPLE_TMP" "$PUMA_DIR/answers.json"
 fi
 
-# Copy this model+dataset's official seed-42 knobs; only override SEED.
-conf_usable() {
-  [[ -f "$1" ]] && grep -q '^SIMILARITY_THRESHOLD=' "$1"
-}
-
-pick_official_conf() {
-  local roots=()
-  if [[ "$MODEL_TAG" == r1_7b && "$DATASET" == math-500 ]]; then
-    roots+=("$AE/results/baselines/official/math500_official/puma_ds7b")
-  fi
-  roots+=("$AE/results/baselines/puma/puma_offline_${MODEL_TAG}/${DATASET}")
-  roots+=("$AE/results/baselines/puma/puma_offline_${MODEL_TAG}/amc23")
-  roots+=("$AE/results/baselines/puma/puma_offline_${MODEL_TAG}/gpqa-diamond")
-  local root name hit
-  for root in "${roots[@]}"; do
-    for name in _DS-7B.local.conf _DS-14B.local.conf _Nemotron.local.conf _Q30B-T.local.conf _local.conf; do
-      if conf_usable "$root/$name"; then
-        echo "$root/$name"
-        return
-      fi
-    done
-    hit="$(ls "$root"/_*.conf 2>/dev/null | head -n 1 || true)"
-    if [[ -n "$hit" ]] && conf_usable "$hit"; then
-      echo "$hit"
-      return
-    fi
-  done
-  echo "$AE/results/baselines/puma/puma_offline_r1_7b/gpqa-diamond/_DS-7B.local.conf"
-}
-CONF_SRC="$(pick_official_conf)"
+# Prefer a prior same-model _local.conf; otherwise use official ALIGN_CONF.
+# Never cat a missing r1_7b leftover — that path is local-only and not shipped.
 LOCAL="$PUMA_DIR/_local.conf"
-if [[ "$CONF_SRC" == "$LOCAL" ]] || ! conf_usable "$CONF_SRC"; then
-  if conf_usable "$AE/results/baselines/puma/puma_offline_r1_7b/amc23/_local.conf"; then
-    CONF_SRC="$AE/results/baselines/puma/puma_offline_r1_7b/amc23/_local.conf"
-  else
-    CONF_SRC="$AE/results/baselines/puma/puma_offline_r1_7b/gpqa-diamond/_DS-7B.local.conf"
-  fi
-fi
-TMP="$LOCAL.tmp.$$"
-{
-  cat "$CONF_SRC"
-  echo "SEED=$SEED"
-} > "$TMP"
-mv -f "$TMP" "$LOCAL"
+CONF_SRC="$("$PY" -m plws.puma_official_conf pick \
+  --ae "$AE" --puma-root "$PUMA_ROOT" \
+  --model-tag "$MODEL_TAG" --dataset "$DATASET" --align-conf "$ALIGN_CONF")"
+"$PY" -m plws.puma_official_conf write \
+  --src "$CONF_SRC" --dst "$LOCAL" --seed "$SEED"
 echo "[puma-official] conf $CONF_SRC -> $LOCAL"
 
 export VLLM_LENS_DISABLE=1

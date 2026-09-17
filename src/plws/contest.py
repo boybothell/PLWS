@@ -978,6 +978,20 @@ def build_fill_tasks(
     return sorted(tasks, key=fill_sort_key)
 
 
+def filter_fill_tasks(
+    tasks: Iterable[ContestTask],
+    task_ids: Iterable[str],
+) -> list[ContestTask]:
+    wanted = [item.strip() for item in task_ids if str(item).strip()]
+    if not wanted:
+        return list(tasks)
+    known = {task.task_id: task for task in tasks}
+    missing = [task_id for task_id in wanted if task_id not in known]
+    if missing:
+        raise ValueError(f"unknown fill task ids: {missing}")
+    return sorted((known[task_id] for task_id in wanted), key=fill_sort_key)
+
+
 def task_complete(paths: PLWSPaths, task: ContestTask) -> tuple[bool, str]:
     if task.kind == "prereq":
         if contest_needs_prereq(paths, task.model, task.dataset, task.seed):

@@ -18,6 +18,7 @@ import importlib
 import sys
 from pathlib import Path
 
+from plws.puma_official_conf import EMBEDDING_DIRNAME, embedding_model_path
 from plws.runtime import dataset_path, model_path
 
 root, puma = map(Path, sys.argv[1:3])
@@ -46,7 +47,16 @@ required_puma = (
     puma / "puma" / "vllm_shutdown.py",
     puma / "baselines" / "deer" / "vllm_deer.py",
     puma / "baselines" / "deer" / "canonical_protocol.py",
+    puma / "configs" / "DS-32B.conf",
+    puma / "configs" / "DS-7B.conf",
+    puma / "configs" / "Q30B-T.conf",
 )
+embed = embedding_model_path()
+if not (embed / "config.json").is_file():
+    errors.append(
+        f"missing PUMA embedding model: {embed} "
+        f"(need {EMBEDDING_DIRNAME} under PLWS_MODELS_ROOT)"
+    )
 for path in required_puma:
     if not path.is_file():
         errors.append(f"missing patched PUMA file: {path}")

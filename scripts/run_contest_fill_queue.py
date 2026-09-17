@@ -34,6 +34,7 @@ from plws.contest import (  # noqa: E402
     engine_ready_for_next_cold_start,
     fill_dispatch,
     fill_task_complete,
+    filter_fill_tasks,
     first_open_phase,
     idle_contest_gpus,
     is_task_log_name,
@@ -543,6 +544,16 @@ def main() -> int:
         default=",".join(str(seed) for seed in SEEDS),
         help="Comma-separated seeds. Official new-run first wave is 42,0,1.",
     )
+    parser.add_argument(
+        "--task-ids",
+        default="",
+        help="Optional comma-separated task ids to keep after planning.",
+    )
+    parser.add_argument(
+        "--allow-parallel",
+        action="store_true",
+        help="Allow a second fill lane while another contest-fill queue is live.",
+    )
     args = parser.parse_args()
     gpus = tuple(item.strip() for item in args.gpus.split(",") if item.strip())
     if args.models.strip():
@@ -574,9 +585,16 @@ def main() -> int:
         datasets=chosen_datasets,
         seeds=chosen_seeds,
     )
+    if args.task_ids.strip():
+        tasks = filter_fill_tasks(
+            tasks,
+            (item.strip() for item in args.task_ids.split(",") if item.strip()),
+        )
 
     if not args.dry_run:
-        if contest_fill_queue_alive(exclude_pid=os.getpid()):
+        if not args.allow_parallel and contest_fill_queue_alive(
+            exclude_pid=os.getpid()
+        ):
             raise RuntimeError("another contest-fill queue is already running")
         for model in chosen_models:
             for dataset in chosen_datasets:
