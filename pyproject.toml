@@ -10,6 +10,12 @@ dependencies = [
   "torch",
   "numpy",
   "matplotlib",
+  # PUMA's math grader falls back to a string compare without these, which
+  # silently scores every LaTeX answer wrong. Versions follow upstream DEER.
+  "sympy",
+  "antlr4-python3-runtime==4.11.1",
+  "latex2sympy2==1.9.1",
+  "word2number",
 ]
 
 [tool.uv]

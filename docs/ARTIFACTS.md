@@ -26,6 +26,8 @@ results/
 - 只有 `cache/` 可以直接清空。
 - `tables/` 是人读报告；Git 只保留租卡交接快照。
 - 每个 cell 的完成状态以规范产物和 manifest 为准，不以日志退出码为准。
+- Acc 旗标可能是「判分失败」而不是答错。沿用历史格子（含小模型）先按
+  [`GRADER_ACCURACY.md`](GRADER_ACCURACY.md) 重判，再出表。
 - seed 42 的平铺产物不能代替其他 seed。
 
 ## 租卡机最小同步集

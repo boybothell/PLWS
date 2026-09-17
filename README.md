@@ -11,6 +11,7 @@ PLWS 是本仓库的主方法：在第一扇连续同答窗后继续推理，并
 - 租卡部署与单格运行：[`docs/RENTAL_SERVER.md`](docs/RENTAL_SERVER.md)
 - Full-CoT 公平协议：[`docs/FULLCOT_PROTOCOL.md`](docs/FULLCOT_PROTOCOL.md)
 - 产物目录与断点同步：[`docs/ARTIFACTS.md`](docs/ARTIFACTS.md)
+- 判分后端与历史 Acc 核验（含小模型）：[`docs/GRADER_ACCURACY.md`](docs/GRADER_ACCURACY.md)
 - 脚本分层与正式入口：[`scripts/README.md`](scripts/README.md)
 
 ## 方法边界

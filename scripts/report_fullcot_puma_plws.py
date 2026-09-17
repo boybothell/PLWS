@@ -23,10 +23,11 @@ from __future__ import annotations
 import json
 import re
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
-from multiprocessing import Pool
 from pathlib import Path
 
+from plws.grading import grade, require_grader
 from plws.matrix import (
     FIRSTWIN,
     TIER_KINDS,
@@ -579,12 +580,11 @@ def _grader():
 
 def grade_deer_item(item: tuple[str, str, str, float]) -> tuple[bool, float]:
     dataset, text, gold, tok = item
-    extract_answer, get_task_type, check_is_correct = _grader()
+    extract_answer, get_task_type, _check = _grader()
     pred = extract_answer(str(text or ""), get_task_type(dataset))
-    try:
-        ok = bool(check_is_correct(pred, gold or ""))
-    except Exception:
-        ok = False
+    ok, error = grade(pred, gold)
+    if error:
+        raise RuntimeError(f"grader failed on {dataset}: {error}")
     return ok, float(tok)
 
 
@@ -663,8 +663,10 @@ def load_deer_cell(
             )
     if len(items) != deer_n:
         return None
-    with Pool(8) as pool:
-        rows = pool.map(grade_deer_item, items, chunksize=16)
+    # ProcessPoolExecutor, not Pool: the grader's timeout helper spawns a child
+    # process, which daemonic Pool workers may not do.
+    with ProcessPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(grade_deer_item, items, chunksize=16))
     cell = {
         "n": len(rows),
         "acc": 100.0 * sum(ok for ok, _ in rows) / len(rows),
@@ -901,6 +903,7 @@ def main() -> None:
         TABLE.write_text(render_markdown_from_payload(payload))
         print(f"rewrote {TABLE} from {REPORT}")
         return
+    require_grader()
     paths = PLWSPaths.discover(ROOT)
     cells: dict[tuple[str, str], dict[str, dict | None]] = {}
     too_long: list[dict] = []

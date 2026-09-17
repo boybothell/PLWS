@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from plws.grading import require_grader  # noqa: E402
 from plws.runtime import dataset_path, load_dotenv  # noqa: E402
 
 load_dotenv(ROOT)
@@ -578,6 +579,9 @@ def main() -> int:
         help="Sample Full-CoT only, skip PUMA/dense/PLWS, then exit.",
     )
     args = parser.parse_args()
+    # A machine whose grader cannot settle LaTeX equivalence writes Acc that is
+    # silently too low for every cell it fills. Refuse before taking a GPU.
+    require_grader()
     global _TASK_IS_DONE
     if args.fullcot_only:
         os.environ["FULLCOT_ONLY"] = "1"

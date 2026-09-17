@@ -106,6 +106,14 @@ for module in ("torch", "transformers", "vllm", "plws.contest"):
     else:
         print(f"[ok] import {module} {getattr(loaded, '__version__', '')}")
 
+try:
+    from plws.grading import require_grader
+
+    require_grader()
+    print("[ok] math grader self-test")
+except Exception as exc:  # noqa: BLE001
+    errors.append(f"math grader self-test failed: {exc}")
+
 for script in (
     root / "scripts" / "run_large_model_cell.sh",
     root / "scripts" / "run_contest_prereq_cell.sh",

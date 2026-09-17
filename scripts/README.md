@@ -13,6 +13,14 @@
 | 多卡 PUMA/PLWS fill | `run_contest_fill_queue.py`（租卡必须传现行六集和 `--seeds 42,0,1`） |
 | 只采 Full-CoT 后停 | 同上，加 `--fullcot-only`（不跑 PUMA / dense / PLWS） |
 | 刷新缺格清单 | `report_large_model_rental_inventory.py`（现行范围报缺；传输核验仍扫历史 180 格） |
+| 核对已落盘判分旗标 | `audit_grader_flags.py`（默认只报；`--fix` 只把 False 升 True） |
+
+判分后端是硬依赖，不是可选项。缺 `antlr4-python3-runtime` / `latex2sympy2` 时
+`math_grader` 无法判定 LaTeX 等价，所有符号答案会静默算错，Acc 整体偏低。
+`run_contest_fill_queue.py`、`score_leftover_suppress.py`、
+`report_fullcot_puma_plws.py` 开跑前都会 `require_grader()` 自检并直接报错。
+换机器或重装环境后，先跑一遍 `audit_grader_flags.py` 再信任旧格子。
+历史小模型怎么扫、`--fix` 何时能用，见 `docs/GRADER_ACCURACY.md`。
 
 单格内部调用链：
 

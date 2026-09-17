@@ -32,6 +32,9 @@ cd plws
 # 指向租卡镜像中能导入 vllm、torch、transformers 的 Python。
 export PLWS_PY=/path/to/vllm-env/bin/python
 uv pip install --python "$PLWS_PY" -e . --no-deps
+# --no-deps 不会装判分后端。缺这三包时 Acc 会静默偏低，见 docs/GRADER_ACCURACY.md。
+"$PLWS_PY" -m pip install \
+  "antlr4-python3-runtime==4.11.1" "latex2sympy2==1.9.1" word2number
 # 需要在服务器跑测试时再安装：
 uv pip install --python "$PLWS_PY" -r requirements-dev.txt
 

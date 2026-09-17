@@ -22,6 +22,7 @@ from plws.artifacts import (  # noqa: E402
     atomic_write_jsonl,
     utc_now,
 )
+from plws.grading import has_gold  # noqa: E402
 from plws.inputs import (  # noqa: E402
     answer_credit,
     finite,
@@ -120,8 +121,17 @@ def build_jobs(
     seed: int = 42,
     datasets: tuple[str, ...] = DATASETS,
     k: int | None = None,
+    missing_gold: dict[str, int] | None = None,
 ) -> list[dict]:
-    jobs: list[dict] = []
+    """Build window jobs, dropping any dataset that cannot supply gold answers.
+
+    A job without gold grades as wrong for every question, so a dataset whose
+    gold is still missing is reported through ``missing_gold`` and excluded
+    whole rather than written half-poisoned.
+    """
+
+    blocked: dict[str, int] = {} if missing_gold is None else missing_gold
+    by_ds: dict[str, list[dict]] = {}
     for dataset in datasets:
         trials_path = PATHS.dense_trial_path(model, dataset, seed)
         if not trials_path.is_file():
@@ -157,6 +167,9 @@ def build_jobs(
             g = gmap.get(qi) or {}
             last = max(trials, key=lambda x: int(x["stopped_len"]))
             gt = info.get("ground_truth") or g.get("ground_truth")
+            if not has_gold(gt):
+                blocked[dataset] = blocked.get(dataset, 0) + 1
+                continue
             original = info.get("original_answer") or g.get("A_final") or last.get("final_answer")
             orig_ok = (
                 bool(info.get("original_correct"))
@@ -201,8 +214,10 @@ def build_jobs(
             window_k = K if k is None else int(k)
             if window_k != K:
                 job["k"] = window_k
-            jobs.append(job)
-    return jobs
+            by_ds.setdefault(dataset, []).append(job)
+    for dataset in blocked:
+        by_ds.pop(dataset, None)
+    return [job for dataset in datasets for job in by_ds.get(dataset, ())]
 
 
 def _puma_dir(model: str, dataset: str, seed: int) -> Path:
@@ -316,8 +331,17 @@ def write_jobs(
     k: int | None = None,
     lexicon: str = "core",
     out_root: Path | None = None,
-) -> None:
-    jobs = build_jobs(model, kind, seed, datasets=datasets, k=k)
+) -> bool:
+    missing_gold: dict[str, int] = {}
+    jobs = build_jobs(
+        model, kind, seed, datasets=datasets, k=k, missing_gold=missing_gold
+    )
+    for dataset, count in sorted(missing_gold.items()):
+        print(
+            f"SKIP {model} {dataset} s{seed} {kind}: {count} question(s) without gold; "
+            "run PUMA first so statistics.json can supply ground_truth",
+            flush=True,
+        )
     window_k = K if k is None else int(k)
     if out_root is not None:
         folder = out_root / f"{model}_s{seed}"
@@ -327,12 +351,13 @@ def write_jobs(
         )
         atomic_write_jsonl(out, jobs)
         print(f"wrote compatibility aggregate {len(jobs)} {kind} -> {out}", flush=True)
-        return
+        return not missing_gold
 
     by_dataset = {
         dataset: [job for job in jobs if job["dataset"] == dataset]
         for dataset in datasets
-        if PATHS.dense_trial_path(model, dataset, seed).is_file()
+        if dataset not in missing_gold
+        and PATHS.dense_trial_path(model, dataset, seed).is_file()
     }
     for dataset, rows in by_dataset.items():
         out = jobs_path(
@@ -386,6 +411,7 @@ def write_jobs(
             },
         )
         print(f"wrote noncanonical work aggregate {len(jobs)} -> {work}", flush=True)
+    return not missing_gold
 
 
 def main() -> None:
@@ -440,11 +466,12 @@ def main() -> None:
     models = MODELS if args.all or not args.model_tag else (args.model_tag,)
     if args.model_tag:
         wait_amc_gsm(args.model_tag, seeds, datasets)
+    complete = True
     for seed in seeds:
         ds = datasets if seed == 42 or args.datasets else AIME_ONLY
         for model in models:
             for kind in kinds:
-                write_jobs(
+                complete &= write_jobs(
                     model,
                     kind,
                     seed=seed,
@@ -454,6 +481,8 @@ def main() -> None:
                     lexicon=args.lexicon,
                     out_root=args.out_root,
                 )
+    if not complete:
+        raise SystemExit("some cells lack gold answers; nothing written for those")
 
 
 if __name__ == "__main__":

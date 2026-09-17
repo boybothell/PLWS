@@ -24,6 +24,7 @@ ROOT_HINT = Path(os.environ.get("PLWS_ROOT", Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_HINT / "src"))
 
 from plws.artifacts import atomic_write_json, load_jsonl, utc_now  # noqa: E402
+from plws.grading import grade, has_gold, require_grader  # noqa: E402
 from plws.inputs import same_answer  # noqa: E402
 from plws.lexicon import LEXICONS, suppress_bad_words, usable_bad_words  # noqa: E402
 from plws.paths import PLWSPaths, datasets_for_jobs  # noqa: E402
@@ -72,10 +73,48 @@ MODELS = {
     )
 }
 
-from math_grader import check_is_correct  # noqa: E402
 from prompt_utils import get_task_type  # noqa: E402
 
 WAIT_RE = re.compile(r"\bwait\b|\balternatively\b|\bhmm+\b|等一下", re.I)
+
+
+def regrade_stale_gold(out: Path, gold_by_uid: dict[str, Any]) -> int:
+    """Re-grade records this shard owns whose gold has since changed.
+
+    Resume matches on uid and protocol only, so a record graded against gold
+    that was missing or different would otherwise keep its stale flag forever.
+    Re-grading is CPU-only, so repair here instead of regenerating answers.
+    """
+
+    if not out.is_file():
+        return 0
+    records = load_jsonl(out)
+    if not records:
+        return 0
+    fixed = 0
+    for record in records:
+        gold = gold_by_uid.get(str(record.get("uid") or ""))
+        if not has_gold(gold):
+            continue
+        if "gt" in record and str(record["gt"]) == str(gold):
+            continue
+        ok, error = grade(record.get("new_answer"), gold)
+        record["gt"] = gold
+        record["gold_error"] = error
+        if bool(record.get("new_gold_ok")) != ok:
+            record["new_gold_ok"] = ok
+        fixed += 1
+    if not fixed:
+        return 0
+    tmp = out.with_suffix(out.suffix + ".regrade")
+    with tmp.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp.replace(out)
+    print(f"regraded {fixed} record(s) against current gold in {out}", flush=True)
+    return fixed
 
 
 def request_seed(base: int | None, uid: str, phase: str) -> int | None:
@@ -232,6 +271,19 @@ def main() -> None:
     if row_ks and row_ks != {args.k}:
         parser.error(f"jobs k mismatch: expected {args.k}, found {sorted(row_ks)}")
 
+    # A job without gold grades wrong on every question, so refuse the cell
+    # before burning GPU on it. Re-export once PUMA statistics exist.
+    no_gold = [str(job.get("uid")) for job in all_jobs if not has_gold(job.get("gt"))]
+    if no_gold:
+        shown = ", ".join(no_gold[:5]) + ("..." if len(no_gold) > 5 else "")
+        raise SystemExit(
+            f"{len(no_gold)}/{len(all_jobs)} jobs in {jobs_source} have no gold "
+            f"answer; re-export after PUMA statistics exist. Affected: {shown}"
+        )
+    # Understated Acc is worse than a crash: stop if the grader cannot settle
+    # LaTeX equivalence.
+    require_grader()
+
     jobs = all_jobs
     jobs = [job for i, job in enumerate(jobs) if i % args.num_shards == args.shard_id]
     if args.limit:
@@ -282,6 +334,7 @@ def main() -> None:
                         lexicon=args.lexicon,
                     )
                 )
+    regrade_stale_gold(args.out, {str(job["uid"]): job["gt"] for job in jobs})
     resume_paths = [args.out]
     if not args.ignore_existing:
         resume_paths.extend(
@@ -674,10 +727,7 @@ def main() -> None:
                 generated_text = f"{job.get('thought') or ''}{cont}\n</think>\n\n{text}"
                 task_type = get_task_type(job["dataset"])
                 answer = extract_answer(generated_text, task_type)
-                try:
-                    gold_ok = bool(check_is_correct(answer, job["gt"]))
-                except Exception:
-                    gold_ok = False
+                gold_ok, gold_error = grade(answer, job["gt"])
                 rec = {
                     "status": "ok",
                     "mode": args.mode,
@@ -707,6 +757,10 @@ def main() -> None:
                     "new_answer": answer,
                     "keep": bool(same_answer(job["old_answer"], answer)),
                     "new_gold_ok": gold_ok,
+                    # Kept so a later audit can tell a graded miss from an
+                    # ungraded one, and can detect gold changing under us.
+                    "gt": job["gt"],
+                    "gold_error": gold_error,
                     "next_ent_mean": job.get("next_ent_mean"),
                     "cont_n": len(cont),
                     "n_left_tok": n_left,
