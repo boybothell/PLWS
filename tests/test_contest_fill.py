@@ -17,6 +17,7 @@ from plws.contest import (
     OFFICIAL_NEW_DATASETS,
     QUEUE_MODELS,
     build_fill_tasks,
+    cells_needing_cpu_export,
     contest_blocked_phases,
     engine_ready_for_next_cold_start,
     dual_lane_cap,
@@ -125,6 +126,25 @@ class ContestFillTest(unittest.TestCase):
         self.assertEqual(seeds, {42, 0, 1})
         self.assertEqual(datasets, set(OFFICIAL_NEW_DATASETS))
         self.assertNotIn("aime24", datasets)
+
+    def test_cpu_export_respects_selected_seeds(self) -> None:
+        model = "qwen3_30b_a3b"
+        dataset = "math-500"
+        for seed in (0, 123):
+            self._write(
+                self.paths.dense_trial_path(model, dataset, seed),
+                [{"question_idx": 1, "stopped_len": 1}],
+            )
+
+        self.assertEqual(
+            cells_needing_cpu_export(
+                self.paths,
+                (model,),
+                datasets=(dataset,),
+                seeds=(0,),
+            ),
+            [(model, dataset, 0)],
+        )
 
     def test_fill_scope_keeps_old_contest_lane(self) -> None:
         self.assertEqual(DATASETS, ("brumo25", "hmmt25", "aime24", "aime25", "aime26"))

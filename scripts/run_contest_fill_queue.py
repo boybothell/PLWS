@@ -309,6 +309,7 @@ def start_cpu_export(model: str, dataset: str, seed: int) -> subprocess.Popen:
 def kick_cpu_exports(
     models: tuple[str, ...],
     datasets: tuple[str, ...],
+    seeds: tuple[int, ...],
     started: dict[tuple[str, str, int], subprocess.Popen],
 ) -> None:
     for key, proc in list(started.items()):
@@ -322,7 +323,7 @@ def kick_cpu_exports(
             event("cpu_export_done", **fields)
     live = live_cpu_exports() | set(started)
     for model, dataset, seed in cells_needing_cpu_export(
-        PATHS, models, datasets=datasets
+        PATHS, models, datasets=datasets, seeds=seeds
     ):
         key = (model, dataset, seed)
         if key in live:
@@ -723,7 +724,9 @@ def main() -> int:
             free = idle_contest_gpus(gpus, used, leftover=leftover)
             still_loading = loading_items(running)
             foreign_loading = vllm_workers_loading(our_worker_pids(running))
-            kick_cpu_exports(chosen_models, chosen_datasets, cpu_exports)
+            kick_cpu_exports(
+                chosen_models, chosen_datasets, chosen_seeds, cpu_exports
+            )
             running_gpu_counts = [item.task.gpu_count for item in running.values()]
             candidates = fill_dispatch(
                 pending,
