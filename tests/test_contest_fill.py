@@ -407,7 +407,10 @@ class ContestFillTest(unittest.TestCase):
         self.assertIn("CONTEST_RUN_ROOT", prereq)
         self.assertIn('VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"', prereq)
         dense = (ROOT / "scripts" / "run_dense_trials_model.sh").read_text()
-        self.assertIn('VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"', dense)
+        self.assertIn(
+            'VLLM_GPU_MEMORY_UTILIZATION="${DENSE_VLLM_GPU_MEMORY_UTILIZATION:-0.90}"',
+            dense,
+        )
         self.assertTrue(
             is_contest_fill_queue_cmd(
                 ["python", "/repo/scripts/run_contest_fill_queue.py", "--gpus", "0,1,2,3"]

@@ -29,6 +29,17 @@ run_deer_official.sh
 
 这些原子脚本是正式实现，不要另复制一套参数。
 
+租卡 fill 队列下的 vLLM `gpu_memory_utilization`（包装脚本先 export 0.97）：
+
+| 阶段 | 占用比 | 接线 |
+|---|---|---|
+| Full-CoT | 0.97 | 跟着队列环境 |
+| PUMA | 0.90 | `PUMA_VLLM_GPU_MEMORY_UTILIZATION` |
+| dense | 0.90 | `DENSE_VLLM_GPU_MEMORY_UTILIZATION`，不继承 0.97 |
+| 窗后压 | 0.97 | 读队列环境 |
+
+详见 `docs/RENTAL_SERVER.md`。dense 不得再用窗后压那档 0.97。
+
 `run_dense_trials_model.sh` 的 dense 轨迹仍覆盖 Full-CoT 的每个推理步骤，但
 不再重跑 PUMA 已生成的重叠切点。它冻结
 `puma_trial_reuse_plan.json`，复用 PUMA 非 `skipped` 行，只对缺步调用

@@ -165,6 +165,9 @@ tmux new-session -d -s plws-large-fill \
   "cd '$PLWS_ROOT' && \
    PLWS_PY='$PLWS_PY' PUMA_ROOT='$PUMA_ROOT' \
    PLWS_MODELS_ROOT='$PLWS_MODELS_ROOT' PLWS_LARGE_TP=1 \
+   VLLM_GPU_MEMORY_UTILIZATION=0.97 \
+   VLLM_MAX_NUM_SEQS=8 \
+   VLLM_MAX_NUM_BATCHED_TOKENS=8192 \
    '$PLWS_PY' scripts/run_contest_fill_queue.py \
    --gpus 0,1,2,3 --models '$MODELS' \
    --datasets '$DATASETS' --seeds '$SEEDS'"
@@ -179,6 +182,21 @@ succeeded，不进入 GPU pending；半截 shard 只补缺少的 uid。
 
 停止时先向对应 tmux 会话发送 `Ctrl-C`，不要直接杀 vLLM worker。Full-CoT 和
 DEER 整批通常没有题级 checkpoint；PLWS 以完整 `shard_*.jsonl` 为断点。
+
+租卡 fill 包装脚本（本机 `tmp/run_q30_dynamic_queue.sh` 同类）会先
+`export VLLM_GPU_MEMORY_UTILIZATION=0.97`。各阶段实际占用比如下，不要混用：
+
+| 阶段 | `gpu_memory_utilization` | 谁定的 |
+|---|---|---|
+| Full-CoT（`run_vllm.py`） | 0.97 | 采样脚本不改写，跟着队列环境 |
+| PUMA 试答 + 前缀续写 | 0.90 | `run_puma_official.sh` 用 `PUMA_VLLM_GPU_MEMORY_UTILIZATION` 强制 |
+| dense 补缺步 | 0.90 | `run_dense_trials_model.sh` 用 `DENSE_VLLM_GPU_MEMORY_UTILIZATION` 强制；不得继承窗后压的 0.97 |
+| 窗后压 PLWS | 0.97 | `score_leftover_suppress.py` 读环境；脚本默认 0.88，队列给 0.97 |
+
+0.6B 冗余检测写死 0.30，与上表无关。Olympiad 等长前缀 dense 在 0.97 下会在
+logits 排序时 OOM；PUMA / dense 必须保持 0.90。窗后压仍要 0.97 才能放下
+38K KV。不经 fill 包装单独跑时：Full-CoT 回到 `run_vllm.py` 默认 0.85，窗后压
+回到 0.88。
 
 ## 6. 完成核验
 
