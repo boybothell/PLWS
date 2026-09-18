@@ -23,8 +23,13 @@ os.environ.setdefault("VLLM_LENS_DISABLE", "1")
 ROOT_HINT = Path(os.environ.get("PLWS_ROOT", Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(ROOT_HINT / "src"))
 
-from plws.artifacts import atomic_write_json, load_jsonl, utc_now  # noqa: E402
-from plws.grading import grade, has_gold, require_grader  # noqa: E402
+from plws.artifacts import (  # noqa: E402
+    atomic_write_json,
+    atomic_write_jsonl,
+    load_jsonl,
+    utc_now,
+)
+from plws.grading import grade, grade_many, has_gold, require_grader  # noqa: E402
 from plws.inputs import same_answer  # noqa: E402
 from plws.lexicon import LEXICONS, suppress_bad_words, usable_bad_words  # noqa: E402
 from plws.paths import PLWSPaths, datasets_for_jobs  # noqa: E402
@@ -78,12 +83,12 @@ from prompt_utils import get_task_type  # noqa: E402
 WAIT_RE = re.compile(r"\bwait\b|\balternatively\b|\bhmm+\b|等一下", re.I)
 
 
-def regrade_stale_gold(out: Path, gold_by_uid: dict[str, Any]) -> int:
-    """Re-grade records this shard owns whose gold has since changed.
+def verify_existing_grades(out: Path, gold_by_uid: dict[str, Any]) -> int:
+    """Verify every reusable row before resume can trust its correctness flag.
 
-    Resume matches on uid and protocol only, so a record graded against gold
-    that was missing or different would otherwise keep its stale flag forever.
-    Re-grading is CPU-only, so repair here instead of regenerating answers.
+    Old workers can leave a correct answer marked False even when gold did not
+    change. Re-grade all owned rows, promote safe False-to-True findings, and
+    add the explicit gt/gold_error fields required by completion checks.
     """
 
     if not out.is_file():
@@ -91,30 +96,67 @@ def regrade_stale_gold(out: Path, gold_by_uid: dict[str, Any]) -> int:
     records = load_jsonl(out)
     if not records:
         return 0
-    fixed = 0
-    for record in records:
+    indexed: list[int] = []
+    pairs: list[tuple[Any, Any]] = []
+    for index, record in enumerate(records):
         gold = gold_by_uid.get(str(record.get("uid") or ""))
         if not has_gold(gold):
             continue
-        if "gt" in record and str(record["gt"]) == str(gold):
-            continue
-        ok, error = grade(record.get("new_answer"), gold)
+        indexed.append(index)
+        pairs.append((record.get("new_answer"), gold))
+    results = grade_many(pairs, workers=min(16, max(1, len(pairs))))
+    promotions: list[int] = []
+    reviews: list[str] = []
+    errors: list[str] = []
+    for index, (ok, error) in zip(indexed, results):
+        record = records[index]
+        where = str(record.get("uid") or record.get("question_idx") or index)
+        if error:
+            errors.append(f"{where}: {error}")
+        elif ok and not bool(record.get("new_gold_ok")):
+            promotions.append(index)
+        elif bool(record.get("new_gold_ok")) and not ok:
+            reviews.append(where)
+    if errors or reviews:
+        details = []
+        if errors:
+            details.append("grader errors: " + "; ".join(errors[:8]))
+        if reviews:
+            details.append("stored True regraded False: " + ", ".join(reviews[:8]))
+        raise RuntimeError(
+            f"existing PLWS grades cannot be trusted in {out}: "
+            + "; ".join(details)
+        )
+
+    changed = 0
+    promoted = set(promotions)
+    for index in indexed:
+        record = records[index]
+        gold = gold_by_uid[str(record.get("uid") or "")]
+        old = (
+            record.get("gt"),
+            record.get("gold_error"),
+            bool(record.get("new_gold_ok")),
+        )
         record["gt"] = gold
-        record["gold_error"] = error
-        if bool(record.get("new_gold_ok")) != ok:
-            record["new_gold_ok"] = ok
-        fixed += 1
-    if not fixed:
+        record["gold_error"] = ""
+        if index in promoted:
+            record["new_gold_ok"] = True
+        new = (
+            record.get("gt"),
+            record.get("gold_error"),
+            bool(record.get("new_gold_ok")),
+        )
+        changed += int(old != new)
+    if not changed:
         return 0
-    tmp = out.with_suffix(out.suffix + ".regrade")
-    with tmp.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    tmp.replace(out)
-    print(f"regraded {fixed} record(s) against current gold in {out}", flush=True)
-    return fixed
+    atomic_write_jsonl(out, records)
+    print(
+        f"verified existing grades in {out}: checked={len(indexed)} "
+        f"promoted={len(promotions)} updated={changed}",
+        flush=True,
+    )
+    return changed
 
 
 def request_seed(base: int | None, uid: str, phase: str) -> int | None:
@@ -334,7 +376,7 @@ def main() -> None:
                         lexicon=args.lexicon,
                     )
                 )
-    regrade_stale_gold(args.out, {str(job["uid"]): job["gt"] for job in jobs})
+    verify_existing_grades(args.out, {str(job["uid"]): job["gt"] for job in jobs})
     resume_paths = [args.out]
     if not args.ignore_existing:
         resume_paths.extend(
@@ -560,6 +602,10 @@ def main() -> None:
                                 "truncated_answer_fix_tokens": args.answer_tokens,
                                 "required_context": required_context,
                                 "max_model_len": args.max_context,
+                                "new_answer": "",
+                                "new_gold_ok": False,
+                                "gt": job["gt"],
+                                "gold_error": "",
                             }
                         )
                         + "\n"
@@ -666,6 +712,10 @@ def main() -> None:
                                 "fullcot_generation_tokens": args.generation_tokens,
                                 "truncated_answer_fix_tokens": args.answer_tokens,
                                 "max_model_len": args.max_context,
+                                "new_answer": "",
+                                "new_gold_ok": False,
+                                "gt": job["gt"],
+                                "gold_error": "",
                             }
                         )
                         + "\n"

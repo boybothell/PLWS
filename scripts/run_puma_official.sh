@@ -28,6 +28,12 @@ fi
 SAMPLE="${SAMPLE:-$AE/samples/$MODEL_TAG/$DATASET/seed_${SEED}}"
 BENCH="${BENCH:-$PLWS_DATA_ROOT/${DATASET}_test.jsonl}"
 
+verify_statistics() {
+  "$PY" -m plws.puma_grading \
+    --statistics "$PUMA_DIR/statistics.json" \
+    --fix
+}
+
 mkdir -p "$PUMA_DIR"
 RUN_FINISHED=0
 write_status() {
@@ -69,6 +75,7 @@ PY
 write_status running
 
 if [[ -f "$PUMA_DIR/statistics.json" && -f "$PUMA_DIR/prefixed_answers.json" ]]; then
+  verify_statistics
   write_status succeeded "existing complete output reused"
   RUN_FINISHED=1
   echo "[puma-official] skip complete $MODEL_TAG $DATASET seed=$SEED"
@@ -108,6 +115,7 @@ echo "[puma-official] GPU=$GPU $MODEL_TAG $DATASET seed=$SEED -> $PUMA_DIR"
 cd "$PUMA_ROOT"
 bash run_pipeline.sh "$LOCAL" "$PUMA_DIR" "$MODEL" "$DATASET" "$BENCH" \
   2>&1 | tee -a "$PUMA_DIR/run.log"
+verify_statistics
 write_status succeeded
 RUN_FINISHED=1
 echo "[puma-official] done $PUMA_DIR"

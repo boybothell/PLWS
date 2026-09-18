@@ -108,12 +108,19 @@ puma_ready() {
   [[ -f "$PUMA_DIR/statistics.json" && -f "$PUMA_DIR/prefixed_answers.json" ]]
 }
 
+verify_puma_grades() {
+  "$PY" -m plws.puma_grading \
+    --statistics "$PUMA_DIR/statistics.json" \
+    --fix
+}
+
 if [[ "${FULLCOT_ONLY:-0}" == "1" ]] && sample_matches_protocol && [[ -f "$SAMPLE/answers.json" ]]; then
   echo "[contest-prereq] skip complete fullcot-only $MODEL_TAG $DATASET seed=$SEED $PROTOCOL_ID"
   exit 0
 fi
 
 if puma_ready && jobs_ready && sample_matches_protocol; then
+  verify_puma_grades
   echo "[contest-prereq] skip complete $MODEL_TAG $DATASET seed=$SEED $PROTOCOL_ID"
   exit 0
 fi
@@ -153,6 +160,7 @@ if [[ "${FULLCOT_ONLY:-0}" == "1" ]]; then
 fi
 
 if puma_ready && sample_matches_protocol; then
+  verify_puma_grades
   echo "[contest-prereq] reuse complete PUMA $PUMA_DIR"
 elif [[ -f "$PUMA_DIR/answers.json" ]] && sample_matches_protocol; then
   echo "[contest-prereq] finish incomplete PUMA from existing answers $PUMA_DIR"

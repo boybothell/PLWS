@@ -38,6 +38,7 @@ from plws.contest import OFFICIAL_FIRST_SEEDS, OFFICIAL_NEW_DATASETS  # noqa: E4
 from plws.grading import grade_many, has_gold, require_grader  # noqa: E402
 from plws.matrix import job_rows  # noqa: E402
 from plws.paths import PLWSPaths  # noqa: E402
+from plws.puma_grading import write_puma_verification_marker  # noqa: E402
 
 DEFAULT_MODELS = ("qwen3_30b_a3b", "r1_32b", "qwen3_32b", "qwq_32b")
 BACKUP_SUFFIX = ".bak_grader_audit"
@@ -162,6 +163,7 @@ def audit_cell(
             int(row["question_idx"]): row.get("ground_truth") for row in rows
         }
         dirty = False
+        puma_findings: list[Finding] = []
         for flag, answer_key in PUMA_FLAGS:
             finding, changed = audit_records(
                 f"{model} {dataset} s{seed} puma/{flag}",
@@ -172,10 +174,17 @@ def audit_cell(
                 workers,
             )
             findings.append(finding)
+            puma_findings.append(finding)
             dirty = dirty or changed
         if dirty and fix:
             backup_once(stats_path)
             write_json(stats_path, rows)
+        blocked = any(
+            finding.review or finding.no_gold or finding.errors
+            for finding in puma_findings
+        )
+        if fix and not blocked:
+            write_puma_verification_marker(stats_path)
 
     shard = (
         paths.score_dir(model, dataset, seed, "firstwin", k=4, lexicon="core")

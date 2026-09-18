@@ -382,6 +382,15 @@ def env_for(task: ContestTask, gpus: tuple[str, ...]) -> dict[str, str]:
             "VLLM_LENS_DISABLE": "1",
         }
     )
+    # Dense overwrites VLLM_GPU_MEMORY_UTILIZATION to
+    # DENSE_VLLM_GPU_MEMORY_UTILIZATION (default 0.90). 32B on 80GB cannot
+    # init max_model_len=38000 at 0.90 (~4.5GiB KV, needs ~9.3GiB). Follow
+    # the PUMA occupancy the queue already chose; do not inherit leftover
+    # 0.97 from VLLM_GPU_MEMORY_UTILIZATION alone.
+    if not str(env.get("DENSE_VLLM_GPU_MEMORY_UTILIZATION") or "").strip():
+        env["DENSE_VLLM_GPU_MEMORY_UTILIZATION"] = env.get(
+            "PUMA_VLLM_GPU_MEMORY_UTILIZATION"
+        ) or env.get("VLLM_GPU_MEMORY_UTILIZATION", "0.90")
     return env
 
 

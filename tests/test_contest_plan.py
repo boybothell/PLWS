@@ -192,6 +192,8 @@ class ContestPlanTest(unittest.TestCase):
                 {
                     "uid": "qwen3_30b_a3b:hmmt25:0:firstwin:0",
                     "status": "ok",
+                    "gt": "42",
+                    "gold_error": "",
                     "protocol_id": MAIN_PROTOCOL.protocol_id,
                     "max_model_len": MAIN_PROTOCOL.max_model_len,
                     "truncated_answer_fix_tokens": MAIN_PROTOCOL.answer_fix_tokens,

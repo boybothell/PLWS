@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from plws.artifacts import load_jsonl
+from plws.grading import has_gold
 from plws.matrix import (
     FIRSTWIN,
     FROZEN_FULLCOT,
@@ -21,6 +22,7 @@ from plws.matrix import (
     puma_complete,
 )
 from plws.paths import PLWSPaths
+from plws.puma_grading import puma_grades_verified
 from plws.protocol import (
     FULLCOT_GENERATION_TOKENS,
     PROMPT_RESERVE_TOKENS,
@@ -171,6 +173,10 @@ def contest_reusable_score(row: Mapping[str, Any], protocol: ContestProtocol) ->
     return (
         row.get("status") in {"ok", "too_long"}
         and row.get("uid")
+        and "gt" in row
+        and has_gold(row.get("gt"))
+        and "gold_error" in row
+        and not row.get("gold_error")
         and row.get("protocol_id") == protocol.protocol_id
         and row.get("max_model_len") == protocol.max_model_len
         and int(row.get("truncated_answer_fix_tokens") or 0)
@@ -917,6 +923,10 @@ def fill_needs_prereq(
 ) -> bool:
     if fill_legacy_plws_complete(paths, model, dataset, seed)[0]:
         return False
+    if puma_complete(paths, model, dataset, seed) and not puma_grades_verified(
+        paths.puma_statistics_path(model, dataset, seed)
+    ):
+        return True
     if jobs_present(paths, model, dataset, seed) and puma_complete(
         paths, model, dataset, seed
     ):

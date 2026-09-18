@@ -17,9 +17,14 @@
 
 判分后端是硬依赖，不是可选项。缺 `antlr4-python3-runtime` / `latex2sympy2` 时
 `math_grader` 无法判定 LaTeX 等价，所有符号答案会静默算错，Acc 整体偏低。
-`run_contest_fill_queue.py`、`score_leftover_suppress.py`、
-`report_fullcot_puma_plws.py` 开跑前都会 `require_grader()` 自检并直接报错。
-换机器或重装环境后，先跑一遍 `audit_grader_flags.py` 再信任旧格子。
+`run_contest_fill_queue.py`、`run_puma_official.sh`、
+`score_leftover_suppress.py`、`report_fullcot_puma_plws.py` 都在正式路径上
+强制统一 grader。PUMA 新生成或复用 `statistics.json` 时必须通过
+`python -m plws.puma_grading --fix`，并写入匹配当前文件的
+`statistics.grader.json`；没有凭证的 PUMA 格不会被 fill 队列判成 prereq
+完成。窗后压恢复旧 shard 时会重判全部已有答案，缺 `gt/gold_error` 的旧行
+也不会被判成完成。任何缺 gold、判分异常或 True→False 都直接阻断该格。
+换机器或重装环境后，仍应跑一遍 `audit_grader_flags.py` 核旧格子。
 历史小模型怎么扫、`--fix` 何时能用，见 `docs/GRADER_ACCURACY.md`。
 
 单格内部调用链：
@@ -43,11 +48,11 @@ run_deer_official.sh
 | 阶段 | 占用比 | 接线 |
 |---|---|---|
 | Full-CoT | 0.97 | 跟着队列环境 |
-| PUMA | 0.90 | `PUMA_VLLM_GPU_MEMORY_UTILIZATION` |
-| dense | 0.90 | `DENSE_VLLM_GPU_MEMORY_UTILIZATION`，不继承 0.97 |
+| PUMA | 0.97（32B/80GB） | `PUMA_VLLM_GPU_MEMORY_UTILIZATION`，脚本默认 0.90 |
+| dense | 0.97（32B/80GB） | `DENSE_VLLM_GPU_MEMORY_UTILIZATION`，跟 PUMA，不继承窗后压 |
 | 窗后压 | 0.97 | 读队列环境 |
 
-详见 `docs/RENTAL_SERVER.md`。dense 不得再用窗后压那档 0.97。
+详见 `docs/RENTAL_SERVER.md`。32B 在 80GB 上 0.90 放不下 38k KV。
 
 `run_dense_trials_model.sh` 的 dense 轨迹仍覆盖 Full-CoT 的每个推理步骤，但
 不再重跑 PUMA 已生成的重叠切点。它冻结

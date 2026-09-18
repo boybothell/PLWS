@@ -134,10 +134,10 @@ printf '%s\n' \
 mv -f "$META_TMP" "$OUT/meta.txt"
 
 export VLLM_LENS_DISABLE=1
-# 14B contest cells run TP=1. The upstream default 0.78 leaves ~6.0 GiB KV,
-# short of the 6.96 GiB needed for max_model_len=38000. Match PUMA official.
-# Do not inherit leftover-suppress 0.97 from the fill wrapper: Olympiad
-# every-step prefixes OOM when logits sort has no slack.
+# Default 0.90 matches 14B. 32B on 80GB cannot init max_model_len=38000 at
+# 0.90 (~4.5GiB KV, needs ~9.3GiB). The fill queue must pass
+# DENSE_VLLM_GPU_MEMORY_UTILIZATION with the same value as PUMA (0.97 here).
+# Do not inherit leftover-suppress 0.97 from VLLM_GPU_MEMORY_UTILIZATION.
 export VLLM_GPU_MEMORY_UTILIZATION="${DENSE_VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
 plws_export_cuda_runtime
 

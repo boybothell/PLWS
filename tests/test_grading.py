@@ -1,9 +1,12 @@
 """Guards for the three ways a grading failure used to look like a wrong answer."""
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -120,6 +123,56 @@ class ExportRefusesMissingGoldTest(unittest.TestCase):
             missing_gold=missing,
         )
         self.assertEqual(jobs, [])
+
+
+class ExistingLeftoverGradeTest(unittest.TestCase):
+    def test_old_row_is_regraded_and_marked_reusable(self) -> None:
+        import score_leftover_suppress as score
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "shard_0.jsonl"
+            out.write_text(
+                json.dumps(
+                    {
+                        "uid": "m:d:s:q0",
+                        "status": "ok",
+                        "new_answer": "42",
+                        "new_gold_ok": False,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(score, "grade_many", return_value=[(True, "")]):
+                changed = score.verify_existing_grades(
+                    out, {"m:d:s:q0": "42"}
+                )
+            fixed = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(changed, 1)
+            self.assertTrue(fixed["new_gold_ok"])
+            self.assertEqual(fixed["gt"], "42")
+            self.assertEqual(fixed["gold_error"], "")
+
+    def test_true_to_false_review_blocks_resume(self) -> None:
+        import score_leftover_suppress as score
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "shard_0.jsonl"
+            out.write_text(
+                json.dumps(
+                    {
+                        "uid": "m:d:s:q0",
+                        "status": "ok",
+                        "new_answer": "41",
+                        "new_gold_ok": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(score, "grade_many", return_value=[(False, "")]):
+                with self.assertRaisesRegex(RuntimeError, "cannot be trusted"):
+                    score.verify_existing_grades(out, {"m:d:s:q0": "42"})
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from plws.contest import (
     build_fill_tasks,
     cells_needing_cpu_export,
     contest_blocked_phases,
+    contest_reusable_score,
     engine_ready_for_next_cold_start,
     dual_lane_cap,
     fill_dispatch,
@@ -43,6 +44,7 @@ from plws.contest import (
 )
 from plws.matrix import FIRSTWIN
 from plws.paths import PLWSPaths
+from plws.puma_grading import write_puma_verification_marker
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,10 +69,14 @@ class ContestFillTest(unittest.TestCase):
         else:
             path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
-    def _puma_ready(self, model: str, dataset: str, seed: int) -> None:
+    def _puma_ready(
+        self, model: str, dataset: str, seed: int, *, verified: bool = True
+    ) -> None:
         folder = self.paths.puma_output_dir(model, dataset, seed)
         self._write(folder / "statistics.json", [{"question_idx": 0}])
         self._write(folder / "prefixed_answers.json", {})
+        if verified:
+            write_puma_verification_marker(folder / "statistics.json")
 
     def _jobs(self, model: str, dataset: str, seed: int, count: int = 2) -> None:
         path = self.paths.jobs_path(
@@ -381,6 +387,8 @@ class ContestFillTest(unittest.TestCase):
                 {
                     "uid": "r1_7b:aime24:42:firstwin:0",
                     "status": "ok",
+                    "gt": "42",
+                    "gold_error": "",
                     "protocol_id": protocol.protocol_id,
                     "max_model_len": protocol.max_model_len,
                     "truncated_answer_fix_tokens": protocol.answer_fix_tokens,
@@ -440,6 +448,28 @@ class ContestFillTest(unittest.TestCase):
         self.assertFalse(may_sample_fullcot(self.paths, "r1_7b", "aime24", 42))
         self.assertFalse(fill_needs_prereq(self.paths, "r1_7b", "aime24", 42))
 
+    def test_unverified_puma_forces_prereq_even_when_jobs_exist(self) -> None:
+        self._sample_ready("qwen3_32b", "math-500", 42)
+        self._puma_ready("qwen3_32b", "math-500", 42, verified=False)
+        self._jobs("qwen3_32b", "math-500", 42)
+        self.assertTrue(
+            fill_needs_prereq(self.paths, "qwen3_32b", "math-500", 42)
+        )
+
+    def test_old_leftover_row_without_grading_evidence_is_not_reusable(self) -> None:
+        protocol = protocol_for("qwen3_32b")
+        old = {
+            "uid": "qwen3_32b:math-500:42:firstwin:0",
+            "status": "ok",
+            "protocol_id": protocol.protocol_id,
+            "max_model_len": protocol.max_model_len,
+            "truncated_answer_fix_tokens": protocol.answer_fix_tokens,
+            "fullcot_generation_tokens": protocol.generation_tokens,
+        }
+        self.assertFalse(contest_reusable_score(old, protocol))
+        old.update({"gt": "42", "gold_error": ""})
+        self.assertTrue(contest_reusable_score(old, protocol))
+
     def test_idle_pool_stays_on_zero_to_three(self) -> None:
         idle = idle_contest_gpus(
             ["0", "1", "2", "3"],
@@ -482,13 +512,22 @@ class ContestFillTest(unittest.TestCase):
         self.assertIn("plws_align_conf", prereq)
         self.assertIn("CONTEST_RUN_ROOT", prereq)
         self.assertIn("FULLCOT_ONLY", prereq)
+        self.assertIn("verify_puma_grades", prereq)
         self.assertIn('VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"', prereq)
+        puma = (ROOT / "scripts" / "run_puma_official.sh").read_text()
+        self.assertIn("verify_statistics", puma)
+        self.assertIn("-m plws.puma_grading", puma)
         dense = (ROOT / "scripts" / "run_dense_trials_model.sh").read_text()
         self.assertIn(
             'VLLM_GPU_MEMORY_UTILIZATION="${DENSE_VLLM_GPU_MEMORY_UTILIZATION:-0.90}"',
             dense,
         )
         leftover = (ROOT / "scripts" / "score_leftover_suppress.py").read_text()
+        self.assertIn("DENSE_VLLM_GPU_MEMORY_UTILIZATION", fill)
+        self.assertIn(
+            'env["DENSE_VLLM_GPU_MEMORY_UTILIZATION"] = env.get(',
+            fill,
+        )
         self.assertIn('os.environ.get("VLLM_MAX_NUM_SEQS")', leftover)
         self.assertIn('os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS")', leftover)
         puma_patch = (ROOT / "vendor" / "patches" / "puma-fullcot-32k-v2.patch").read_text()

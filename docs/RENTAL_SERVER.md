@@ -196,14 +196,15 @@ DEER 整批通常没有题级 checkpoint；PLWS 以完整 `shard_*.jsonl` 为断
 | 阶段 | `gpu_memory_utilization` | 谁定的 |
 |---|---|---|
 | Full-CoT（`run_vllm.py`） | 0.97 | 采样脚本不改写，跟着队列环境 |
-| PUMA 试答 + 前缀续写 | 0.90 | `run_puma_official.sh` 用 `PUMA_VLLM_GPU_MEMORY_UTILIZATION` 强制 |
-| dense 补缺步 | 0.90 | `run_dense_trials_model.sh` 用 `DENSE_VLLM_GPU_MEMORY_UTILIZATION` 强制；不得继承窗后压的 0.97 |
+| PUMA 试答 + 前缀续写 | 0.97（32B/80GB） | `run_puma_official.sh` 读 `PUMA_VLLM_GPU_MEMORY_UTILIZATION`，脚本默认 0.90 |
+| dense 补缺步 | 0.97（32B/80GB） | `run_dense_trials_model.sh` 读 `DENSE_VLLM_GPU_MEMORY_UTILIZATION`，脚本默认 0.90；队列跟 PUMA 同一档，不继承窗后压 |
 | 窗后压 PLWS | 0.97 | `score_leftover_suppress.py` 读环境；脚本默认 0.88，队列给 0.97 |
 
-0.6B 冗余检测写死 0.30，与上表无关。Olympiad 等长前缀 dense 在 0.97 下会在
-logits 排序时 OOM；PUMA / dense 必须保持 0.90。窗后压仍要 0.97 才能放下
-38K KV。不经 fill 包装单独跑时：Full-CoT 回到 `run_vllm.py` 默认 0.85，窗后压
-回到 0.88。
+0.6B 冗余检测写死 0.30，与上表无关。32B 在 80GB 上 `max_model_len=38000`
+需要约 9.3GiB KV：0.90 只剩约 4.5GiB，engine 起不来。本机 fill 把 PUMA 和
+dense 都接到 0.97，并用 `VLLM_MAX_NUM_SEQS=8` 压 logits。dense 仍不得单独
+从窗后压的 `VLLM_GPU_MEMORY_UTILIZATION` 继承。不经 fill 包装单独跑时：
+Full-CoT 回到 `run_vllm.py` 默认 0.85，窗后压回到 0.88。
 
 ## 6. 完成核验
 

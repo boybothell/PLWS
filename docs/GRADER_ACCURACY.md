@@ -79,6 +79,19 @@ mean@3 大约上浮 1.5–2.5pp（如 Qwen3-30B MATH-500 Full-CoT 94.47% →
 | `scripts/audit_grader_flags.py` | 重判已落盘旗标；默认只报；`--fix` 只升不降 |
 | `tests/test_grading.py` | 把上面三个洞钉成回归 |
 
+### 正式 fill 不再静默复用旧判分
+
+`run_puma_official.sh` 无论刚生成还是复用已有 `statistics.json`，都会调用
+`python -m plws.puma_grading --fix`。只有统一 grader 重判无错误、无
+True→False 待人工项后，才写 `statistics.grader.json`。fill 的 prereq
+完成判断要求该凭证与当前 statistics 的大小和 mtime 一致；对面服务器重写
+statistics 后凭证会失效，该格会重新进入 prereq，而不是直接沿用旧 Acc。
+
+窗后压也不再只在 gold 变化时重判。`score_leftover_suppress.py` 恢复已有
+shard 时重判本 shard 全部答案，只安全提升 False→True；缺 `gt` /
+`gold_error` 的旧脚本行不再算 protocol-valid 完成。判分异常或存量
+True→False 会直接阻断，不自动降级。
+
 `check_is_correct` 返回 True 是「两式相等」的正证据；返回 False 仍可能是
 3 秒超时。因此 `--fix` **只把 False 升 True**，True→False 只进 `review`，
 不自动改。
