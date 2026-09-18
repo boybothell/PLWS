@@ -1,0 +1,31 @@
+schema_version = 1
+name = "local_48g"
+allowed_models = [
+  "r1_1p5b",
+  "r1_7b",
+  "r1_llama_8b",
+  "nemotron_8b",
+  "r1_14b",
+  "r1_32b",
+  "qwen3_4b",
+  "qwen3_8b",
+  "qwen3_30b_a3b",
+  "qwen3_32b",
+  "qwq_32b",
+]
+gpu_memory_utilization = 0.90
+max_num_seqs = 64
+serialize_cold_load = true
+
+[tensor_parallel]
+r1_1p5b = 1
+r1_7b = 1
+r1_llama_8b = 1
+nemotron_8b = 1
+r1_14b = 1
+r1_32b = 2
+qwen3_4b = 1
+qwen3_8b = 1
+qwen3_30b_a3b = 2
+qwen3_32b = 2
+qwq_32b = 2

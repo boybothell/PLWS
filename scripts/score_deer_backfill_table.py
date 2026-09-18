@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
-from collections import defaultdict
-from multiprocessing import Pool
 from pathlib import Path
 
-PUMA = Path("/mnt/d/lsj/visual-latent-tts/repos/PUMA")
+ROOT = Path(__file__).resolve().parents[1]
+PUMA = Path(os.environ.get("PUMA_ROOT", ROOT.parent / "PUMA")).resolve()
+sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(PUMA))
 sys.path.insert(0, str(PUMA / "puma"))
 
 from baselines.utils.math_util import my_answer_extraction  # noqa: E402
-from math_grader import check_is_correct  # noqa: E402
+from plws.grading import grade_many, require_grader  # noqa: E402
 from transformers import AutoTokenizer  # noqa: E402
 
-ROOT = Path("/mnt/d/lsj/visual-latent-tts/repos/plws")
 BASE = ROOT / "results/baselines/deer/backfill"
 OUT = ROOT / "results/baselines/deer/backfill/_table_cells.json"
 
@@ -52,14 +52,6 @@ def extract_pred(text: str, dataset: str) -> str:
     return str(pred or "").strip()
 
 
-def grade_one(args: tuple[int, str, str]) -> tuple[int, bool]:
-    idx, pred, gt = args
-    try:
-        return idx, bool(check_is_correct(pred, gt))
-    except Exception:
-        return idx, False
-
-
 def load_jsonl(path: Path) -> list[dict]:
     rows = []
     with path.open(encoding="utf-8") as f:
@@ -75,14 +67,11 @@ def score_file(path: Path, dataset: str, tokenizer) -> dict:
     texts = [str(r.get("generated_text") or "") for r in rows]
     gts = [clean_gt(r.get("gold_answer") or r.get("answer") or "") for r in rows]
     preds = [extract_pred(t, dataset) for t in texts]
-    tasks = list(enumerate(zip(preds, gts)))
-    packed = [(i, p, g) for i, (p, g) in tasks]
-    if packed:
-        with Pool(8) as pool:
-            graded = dict(pool.map(grade_one, packed, chunksize=8))
-    else:
-        graded = {}
-    ok = sum(1 for i in range(len(rows)) if graded.get(i))
+    graded = grade_many(list(zip(preds, gts)), workers=8, chunksize=8)
+    errors = [f"q{i}: {error}" for i, (_ok, error) in enumerate(graded) if error]
+    if errors:
+        raise RuntimeError("DEER grading failed: " + "; ".join(errors[:8]))
+    ok = sum(int(correct) for correct, _error in graded)
     toks = []
     trial = []
     for i, text in enumerate(texts):
@@ -99,6 +88,7 @@ def score_file(path: Path, dataset: str, tokenizer) -> dict:
 
 
 def main() -> None:
+    require_grader()
     tok_cache: dict[str, object] = {}
     cells: dict[str, dict] = {}
     for tag, zh, model_path in MODELS:

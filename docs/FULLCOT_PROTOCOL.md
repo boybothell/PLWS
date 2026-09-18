@@ -4,6 +4,9 @@
 `puma-fullcot-32k-v2`。不再把历史 pilot 的 16K context、锁窗后 1024
 token 或 1024-token 终答当作正式协议。
 
+四个基线与 PLWS 的逐方法、逐模型配置及复用边界见
+[`BASELINE_ALIGNMENT_AND_CLOUD_RUNBOOK.md`](BASELINE_ALIGNMENT_AND_CLOUD_RUNBOOK.md)。
+
 ## 规范
 
 | 项 | 唯一值 |

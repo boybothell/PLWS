@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from plws.grading import require_grader  # noqa: E402
+from plws.machine_runs import resolve_run_root  # noqa: E402
 from plws.runtime import dataset_path, load_dotenv  # noqa: E402
 
 load_dotenv(ROOT)
@@ -56,8 +57,10 @@ from plws.matrix import (  # noqa: E402
 from plws.paths import PLWSPaths  # noqa: E402
 
 PY = os.environ.get("PLWS_PY", sys.executable)
-RUN_ROOT = Path(
-    os.environ.get("CONTEST_FILL_RUN_ROOT", ROOT / "results" / "runs" / "contest_fill")
+RUN_ROOT = resolve_run_root(
+    ROOT,
+    env_name="CONTEST_FILL_RUN_ROOT",
+    default_name="contest_fill",
 )
 LOG_ROOT = RUN_ROOT / "logs"
 STATUS_PATH = RUN_ROOT / "status.json"
@@ -417,6 +420,8 @@ def command_for(task: ContestTask) -> list[str]:
         return ["bash", str(ROOT / "scripts" / "run_contest_prereq_cell.sh")]
     if task.kind == "plws":
         return ["bash", str(ROOT / "scripts" / "run_contest_plws_cell.sh")]
+    if task.kind == "deer":
+        return ["bash", str(ROOT / "scripts" / "run_deer_official.sh")]
     raise ValueError(task.kind)
 
 
@@ -482,6 +487,11 @@ def adopt_running(tasks: list[ContestTask]) -> dict[int, Running]:
                 continue
             task = wanted.get(
                 f"plws__{env.get('MODEL_TAG', '')}__"
+                f"{env.get('DATASET', '')}__s{env.get('SEED', '')}"
+            )
+        elif any(part.endswith("run_deer_official.sh") for part in cmd):
+            task = wanted.get(
+                f"deer__{env.get('MODEL_TAG', '')}__"
                 f"{env.get('DATASET', '')}__s{env.get('SEED', '')}"
             )
         if task is None:
@@ -641,6 +651,7 @@ def validate(
     for script in (
         ROOT / "scripts" / "run_contest_prereq_cell.sh",
         ROOT / "scripts" / "run_contest_plws_cell.sh",
+        ROOT / "scripts" / "run_deer_official.sh",
     ):
         if not script.is_file():
             raise FileNotFoundError(script)
@@ -968,8 +979,9 @@ def main() -> int:
                 and any(
                     fill_needs_fullcot_sample(PATHS, task) for task in running_tasks
                 )
+                and any(fill_needs_fullcot_sample(PATHS, task) for task in pending)
             ):
-                waiting = "holding idle GPU until live Full-CoT sampling finishes"
+                waiting = "holding idle GPU for another Full-CoT sample"
             elif pending and not candidates and len(free) < need:
                 waiting = f"only {len(free)} idle GPU in pool {','.join(gpus)}"
             any_loading = bool(still_loading) or foreign_loading

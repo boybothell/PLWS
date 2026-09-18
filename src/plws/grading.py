@@ -9,7 +9,10 @@ from __future__ import annotations
 import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
+
+
+GRADER_VERIFICATION_VERSION = "plws-unified-grader-v1"
 
 
 class GraderUnavailable(RuntimeError):
@@ -129,6 +132,96 @@ def grade(pred: Any, gold: Any) -> tuple[bool, str]:
         return bool(check(_text(pred), _text(gold))), ""
     except Exception as exc:  # noqa: BLE001 - surfaced to the caller
         return False, f"{type(exc).__name__}: {exc}"[:200]
+
+
+def must_grade(pred: Any, gold: Any) -> bool:
+    """Grade one answer or raise. Baseline runners use this for Acc flags."""
+
+    require_grader()
+    ok, error = grade(pred, gold)
+    if error:
+        raise RuntimeError(f"grader failed: {error}")
+    return ok
+
+
+def verify_baseline_records(
+    records: Mapping[int, dict[str, Any]],
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    workers: int = 16,
+) -> set[int]:
+    """Re-grade resumable baseline records before they can be reused.
+
+    Safe False-to-True corrections are applied in memory. A stored True that
+    now grades False, a missing gold answer, or a grader error blocks reuse.
+    The returned indices are the records that callers must atomically rewrite.
+    """
+
+    require_grader()
+    if not records:
+        return set()
+
+    indexed: list[tuple[int, str]] = []
+    pairs: list[tuple[Any, Any]] = []
+    for index, record in sorted(records.items()):
+        if index < 0 or index >= len(samples):
+            raise RuntimeError(f"baseline record question_idx out of range: {index}")
+        sample = samples[index]
+        gold = sample.get("ground_truth_answer")
+        if not has_gold(gold):
+            raise MissingGold(f"baseline sample {index} has no ground_truth_answer")
+        indexed.extend(((index, "correct"), (index, "original_correct")))
+        pairs.extend(
+            (
+                (record.get("answer"), gold),
+                (sample.get("model_answer", ""), gold),
+            )
+        )
+
+    fresh: dict[int, dict[str, bool]] = {}
+    problems: list[str] = []
+    for (index, flag), (ok, error) in zip(
+        indexed,
+        grade_many(
+            pairs,
+            workers=min(workers, max(1, len(pairs))),
+            chunksize=8,
+        ),
+    ):
+        if error:
+            problems.append(f"q{index} {flag}: {error}")
+            continue
+        if bool(records[index].get(flag)) and not ok:
+            problems.append(f"q{index} {flag}: stored True regraded False")
+            continue
+        fresh.setdefault(index, {})[flag] = ok
+    if problems:
+        raise RuntimeError(
+            "baseline grade verification blocked: " + "; ".join(problems[:8])
+        )
+
+    changed: set[int] = set()
+    for index, flags in fresh.items():
+        record = records[index]
+        before = (
+            bool(record.get("correct")),
+            bool(record.get("original_correct")),
+            record.get("grader_verification"),
+            record.get("grade_error"),
+        )
+        record["correct"] = flags["correct"]
+        record["original_correct"] = flags["original_correct"]
+        record["grader_verification"] = GRADER_VERIFICATION_VERSION
+        record["grade_error"] = ""
+        after = (
+            record["correct"],
+            record["original_correct"],
+            record["grader_verification"],
+            record["grade_error"],
+        )
+        if before != after:
+            changed.add(index)
+    return changed
 
 
 def _grade_pair(pair: tuple[Any, Any]) -> tuple[bool, str]:

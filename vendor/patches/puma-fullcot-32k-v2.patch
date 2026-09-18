@@ -712,10 +712,94 @@ index 85d6da0..cb39c4d 100644
  CONSECUTIVE_REDUNDANCY_STOP=1   # m: stop when m consecutive redundant steps (0=disabled)
  CONSECUTIVE_REDUNDANCY_MIN_STEP=50  # Only start detecting consecutive redundancy after this step
 diff --git a/puma/gen_prefixed_answers.py b/puma/gen_prefixed_answers.py
-index 8955579..f10e520 100644
+index 8955579..6f6d720 100644
 --- a/puma/gen_prefixed_answers.py
 +++ b/puma/gen_prefixed_answers.py
-@@ -210,9 +210,26 @@ def process_questions_with_prefixes(
+@@ -8,6 +8,10 @@ import sys
+from typing import List, Dict
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
++from plws.protocol import (
++    FULLCOT_GENERATION_TOKENS,
++    puma_final_regeneration_tokens,
++)
+from prompt_utils import (
+     build_base_prompt, get_task_type, get_confident_ending, extract_boxed_answer,
+    extract_code_answer,
+@@ -174,6 +178,64 @@ def find_token_span_in_ids(full_ids, answer_ids: List[int]) -> tuple:
+    return 0, 0
+
+
++def reuse_full_reasoning_result(
++    candidate: Dict,
++    question_obj: Dict,
++    tokenizer,
++    *,
++    stop_reason: str = "full_reasoning",
++) -> Dict:
++    """Return the original Full-CoT answer when PUMA cannot regenerate."""
++
++    original_answer = question_obj.get("model_answer", "")
++    original_response = question_obj.get("raw_response", "")
++    reasoning_text = question_obj.get("reasoning", "")
++    reasoning_tokens = (
++        len(tokenizer(reasoning_text, add_special_tokens=False).input_ids)
++        if reasoning_text
++        else 0
++    )
++    response_tokens = (
++        len(tokenizer(original_response, add_special_tokens=False).input_ids)
++        if original_response
++        else 0
++    )
++    tokens_trial_answers = candidate.get("tokens_trial_answers", 0)
++    return {
++        "question_idx": candidate["question_idx"],
++        "stopped_len": candidate["stopped_len"],
++        "original_len_reasoning_steps": candidate.get("original_len_reasoning_steps"),
++        "saved_steps": 0,
++        "question": question_obj["question"],
++        "reasoning_prefix": "",
++        "model_response": original_response,
++        "final_answer": original_answer,
++        "count_reasoning_tokens": reasoning_tokens,
++        "count_generated_tokens": response_tokens,
++        "total_tokens": reasoning_tokens + response_tokens,
++        "prefix_generated_tokens": reasoning_tokens,
++        "remaining_main_tokens": max(
++            0, FULLCOT_GENERATION_TOKENS - reasoning_tokens
++        ),
++        "max_generation_tokens": 0,
++        "fullcot_generation_tokens": FULLCOT_GENERATION_TOKENS,
++        "generated_trial_answers": candidate.get("generated_trial_answers", 0),
++        "tokens_trial_answers": tokens_trial_answers,
++        "tokens_trial_answers_online": candidate.get(
++            "tokens_trial_answers_online", tokens_trial_answers
++        ),
++        "confidence": candidate.get("stop_confidence") or 0.0,
++        "new_thinking": False,
++        "success": True,
++        "stop_reason": stop_reason,
++        "stop_confidence": candidate.get("stop_confidence"),
++        "stop_threshold": candidate.get("stop_threshold"),
++        "consecutive_confidences": candidate.get("consecutive_confidences"),
++        "confidence_trajectory": candidate.get("confidence_trajectory"),
++        "step_similarities": candidate.get("step_similarities"),
++    }
++
++
+def process_questions_with_prefixes(
+    final_candidates: List[Dict],
+    questions_data: List[Dict],
+@@ -186,6 +248,7 @@ def process_questions_with_prefixes(
+    prompt_version: str = "default",
+    confidence_aggregation: str = "geometric",
+    code_greedy_guided: bool = False,
++    fullcot_generation_tokens: int = FULLCOT_GENERATION_TOKENS,
+) -> List[Dict]:
+    """
+    Process questions with reasoning prefixes using vLLM batched inference.
+@@ -210,9 +273,26 @@ def process_questions_with_prefixes(
          "model": model_name,
          "trust_remote_code": True,
          "tensor_parallel_size": tensor_parallel_size,
@@ -742,7 +826,7 @@ index 8955579..f10e520 100644
      if seed is not None:
          llm_kwargs["seed"] = seed
      llm = LLM(**llm_kwargs)
-@@ -225,6 +234,9 @@ def process_questions_with_prefixes(
+@@ -225,6 +297,9 @@ def process_questions_with_prefixes(
          temperature = getattr(gen_config, "temperature", 0.6)
          top_p = getattr(gen_config, "top_p", 0.95)
          top_k = getattr(gen_config, "top_k", -1)
@@ -752,7 +836,105 @@ index 8955579..f10e520 100644
          logger.info(f"Loaded generation_config: temperature={temperature}, top_p={top_p}, top_k={top_k}")
      except Exception as e:
          logger.info(f"Failed to load generation_config: {e}")
-@@ -361,6 +373,9 @@ def process_questions_with_prefixes(
+@@ -244,6 +319,7 @@ def process_questions_with_prefixes(
+     eos_tokens = [t for t in eos_tokens if t is not None]
+ 
+     prompts = []
++    sampling_budgets = []
+     meta = []
+     results = []  # Collect results (full_reasoning reuse + vLLM generation)
+ 
+@@ -264,37 +340,9 @@ def process_questions_with_prefixes(
+ 
+         # full_reasoning: reuse original answer directly (no re-generation needed)
+         if candidate.get("stop_reason") == "full_reasoning":
+-            original_answer = question_obj.get("model_answer", "")
+-            original_response = question_obj.get("raw_response", "")
+-            reasoning_text = question_obj.get("reasoning", "")
+-            reasoning_tokens = len(tokenizer(reasoning_text, add_special_tokens=False).input_ids) if reasoning_text else 0
+-            response_tokens = len(tokenizer(original_response, add_special_tokens=False).input_ids) if original_response else 0
+-
+-            result = {
+-                "question_idx": question_idx,
+-                "stopped_len": stopped_len,
+-                "original_len_reasoning_steps": candidate.get("original_len_reasoning_steps"),
+-                "saved_steps": 0,
+-                "question": question_text,
+-                "reasoning_prefix": "",
+-                "model_response": original_response,
+-                "final_answer": original_answer,
+-                "count_reasoning_tokens": reasoning_tokens,
+-                "count_generated_tokens": response_tokens,
+-                "total_tokens": reasoning_tokens + response_tokens,
+-                "generated_trial_answers": candidate.get("generated_trial_answers", 0),
+-                "tokens_trial_answers": tokens_trial_answers,
+-                "tokens_trial_answers_online": tokens_trial_answers_online,
+-                "confidence": candidate.get("stop_confidence") or 0.0,
+-                "new_thinking": False,
+-                "success": True,
+-                "stop_reason": "full_reasoning",
+-                "stop_confidence": candidate.get("stop_confidence"),
+-                "stop_threshold": candidate.get("stop_threshold"),
+-                "consecutive_confidences": candidate.get("consecutive_confidences"),
+-                "confidence_trajectory": candidate.get("confidence_trajectory"),
+-                "step_similarities": candidate.get("step_similarities"),
+-            }
++            result = reuse_full_reasoning_result(
++                candidate, question_obj, tokenizer
++            )
+             results.append(result)
+             logger.info(f"Q{question_idx}: full_reasoning — reusing original answer (skip re-generation)")
+             continue
+@@ -320,7 +368,35 @@ def process_questions_with_prefixes(
+             dataset=dataset,
+             code_greedy_guided=code_greedy_guided,
+         )
++        prefix_generated_tokens = len(
++            tokenizer(
++                f"<think>{reasoning_prefix}",
++                add_special_tokens=False,
++            ).input_ids
++        )
++        generation_budget = puma_final_regeneration_tokens(
++            prefix_generated_tokens,
++            requested_cap=max_tokens,
++            fullcot_generation_tokens=fullcot_generation_tokens,
++        )
++        if generation_budget == 0:
++            logger.warning(
++                "Q%s: prefix used the full %s-token host budget; "
++                "falling back to the original Full-CoT answer",
++                question_idx,
++                fullcot_generation_tokens,
++            )
++            results.append(
++                reuse_full_reasoning_result(
++                    candidate,
++                    question_obj,
++                    tokenizer,
++                    stop_reason="full_reasoning_budget_fallback",
++                )
++            )
++            continue
+         prompts.append(prompt)
++        sampling_budgets.append(generation_budget)
+         
+         meta.append({
+             "question_idx": question_idx,
+@@ -330,6 +406,12 @@ def process_questions_with_prefixes(
+             "question": question_text,
+             "reasoning_prefix": reasoning_prefix,
+             "reasoning_token_count": reasoning_token_count,
++            "prefix_generated_tokens": prefix_generated_tokens,
++            "remaining_main_tokens": (
++                fullcot_generation_tokens - prefix_generated_tokens
++            ),
++            "max_generation_tokens": generation_budget,
++            "fullcot_generation_tokens": fullcot_generation_tokens,
+             "generated_trial_answers": candidate.get("generated_trial_answers", 0),
+             "tokens_trial_answers": tokens_trial_answers,
+             "tokens_trial_answers_online": tokens_trial_answers_online,
+@@ -361,25 +443,37 @@ def process_questions_with_prefixes(
          top_k = -1
          logger.info(f"Code greedy guided mode: temperature=0, greedy decoding + format guide")
  
@@ -762,6 +944,76 @@ index 8955579..f10e520 100644
      logger.info(f"Total prompts to generate: {len(prompts)}")
      logger.info(f"Sampling params: temperature={temperature}, top_p={top_p}, top_k={top_k}")
  
+-    sampling_params = SamplingParams(
+-        temperature=temperature,
+-        max_tokens=max_tokens,
+-        top_p=top_p,
+-        top_k=top_k,
+-        logprobs=1,
+-        stop_token_ids=eos_tokens,
+-    )
+-
+     logger.info(f"Full reasoning reused: {len(results)}/{len(final_candidates)} (skipped re-generation)")
+ 
+     if not prompts:
+         logger.info("All candidates are full_reasoning — no vLLM generation needed.")
+         return results
+ 
+-    logger.info(f"Submitting {len(prompts)} prompts to vLLM (continuous batching)...")
++    sampling_params = [
++        SamplingParams(
++            temperature=temperature,
++            max_tokens=budget,
++            top_p=top_p,
++            top_k=top_k,
++            logprobs=1,
++            stop_token_ids=eos_tokens,
++        )
++        for budget in sampling_budgets
++    ]
++    logger.info(
++        "Submitting %s prompts to vLLM with per-question budgets "
++        "(min=%s, max=%s, host=%s)...",
++        len(prompts),
++        min(sampling_budgets),
++        max(sampling_budgets),
++        fullcot_generation_tokens,
++    )
+     all_outputs = llm.generate(prompts, sampling_params)
+     logger.info(f"vLLM generation complete, processing results...")
+ 
+@@ -470,6 +564,10 @@ def process_questions_with_prefixes(
+             "count_reasoning_tokens": info["reasoning_token_count"],
+             "count_generated_tokens": len(token_ids),
+             "total_tokens": info["reasoning_token_count"] + len(token_ids),
++            "prefix_generated_tokens": info["prefix_generated_tokens"],
++            "remaining_main_tokens": info["remaining_main_tokens"],
++            "max_generation_tokens": info["max_generation_tokens"],
++            "fullcot_generation_tokens": info["fullcot_generation_tokens"],
+             "generated_trial_answers": info["generated_trial_answers"],
+             "tokens_trial_answers": info["tokens_trial_answers"],
+             "tokens_trial_answers_online": info.get("tokens_trial_answers_online", info["tokens_trial_answers"]),
+@@ -540,6 +638,12 @@ def main():
+         default=4096,
+         help="Max tokens to generate for final answer"
+     )
++    parser.add_argument(
++        "--fullcot-generation-tokens",
++        type=int,
++        default=FULLCOT_GENERATION_TOKENS,
++        help="Total host generation budget shared with the saved prefix",
++    )
+     parser.add_argument(
+         "--tensor-parallel-size",
+         type=int,
+@@ -631,6 +735,7 @@ def main():
+         prompt_version=args.prompt_version,
+         confidence_aggregation=args.confidence_aggregation,
+         code_greedy_guided=args.code_greedy_guided,
++        fullcot_generation_tokens=args.fullcot_generation_tokens,
+     )
+ 
+     save_results(results, args.output_file)
 diff --git a/puma/gen_trial_answers.py b/puma/gen_trial_answers.py
 index cc85f0e..61b8619 100644
 --- a/puma/gen_trial_answers.py
@@ -1205,7 +1457,7 @@ index dc41c0b..20d8de4 100644
          temperature=temperature,
          max_tokens=args.max_tokens,
 diff --git a/run_pipeline.sh b/run_pipeline.sh
-index 53e27e2..0db8b0c 100755
+index 53e27e2..61db747 100755
 --- a/run_pipeline.sh
 +++ b/run_pipeline.sh
 @@ -131,8 +131,13 @@ echo ">>> Step 1b: separating reasoning steps"
@@ -1243,6 +1495,14 @@ index 53e27e2..0db8b0c 100755
  else
      echo ">>> Step 1.5: skipped (embedding filter disabled)"
  fi
+@@ -198,6 +212,7 @@ CODE_GREEDY_ARG=""
+     --output-file "$PREFIXED" \
+     --model "$MODEL" \
+     --max-tokens "$MAX_ANSWER_TOKENS" \
++    --fullcot-generation-tokens "$ANSWER_GEN_MAX_TOKENS" \
+     --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \
+     --dataset "$DATASET" \
+     --prompt-version "$PROMPT_VERSION" \
 diff --git a/baselines/deer/canonical_protocol.py b/baselines/deer/canonical_protocol.py
 new file mode 100644
 index 0000000..82c866d

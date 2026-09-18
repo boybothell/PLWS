@@ -10,6 +10,7 @@ from plws.contest import (
     FILL_DATASETS,
     FILL_MODELS,
     FOLLOWON_MODELS,
+    LOCAL_FILL_MODELS,
     MODELS,
     NO_NEW_WORK_DATASETS,
     OFFICIAL_FIRST_SEEDS,
@@ -22,6 +23,7 @@ from plws.contest import (
     contest_reusable_score,
     engine_ready_for_next_cold_start,
     dual_lane_cap,
+    contest_task_ready,
     fill_dispatch,
     fill_fullcot_complete,
     fill_needs_fullcot_sample,
@@ -31,6 +33,7 @@ from plws.contest import (
     fill_task_complete,
     filter_fill_tasks,
     fullcot_only_tasks,
+    deer_task,
     idle_contest_gpus,
     is_contest_fill_queue_cmd,
     log_loaded_after_latest_start,
@@ -431,7 +434,27 @@ class ContestFillTest(unittest.TestCase):
             pool_size=4,
             running_tasks=[prereq_task("r1_7b", "olympiadbench", 0)],
         )
-        self.assertEqual(held, [])
+        self.assertEqual(
+            [task.task_id for task in held],
+            ["prereq__r1_7b__math-500__s0"],
+        )
+        other_dataset = fill_dispatch(
+            [
+                prereq_task("r1_llama_8b", "amc23", 42),
+                prereq_task("r1_llama_8b", "math-500", 42),
+            ],
+            2,
+            self.paths,
+            pool_size=5,
+            running_tasks=[prereq_task("r1_llama_8b", "olympiadbench", 42)],
+        )
+        self.assertEqual(
+            [task.task_id for task in other_dataset],
+            [
+                "prereq__r1_llama_8b__math-500__s42",
+                "prereq__r1_llama_8b__amc23__s42",
+            ],
+        )
 
     def test_non_olympiad_32b_plws_and_unlocker_are_top_priority(self) -> None:
         self._jobs("qwen3_32b", "aime25", 0)
@@ -600,6 +623,7 @@ class ContestFillTest(unittest.TestCase):
         self.assertNotIn("run_matrix_plws_cell.sh", text)
         self.assertIn("--datasets", text)
         self.assertIn("--fullcot-only", text)
+        self.assertIn("run_deer_official.sh", text)
         self.assertIn("PUMA_ROOT", text)
         self.assertNotIn("FORBIDDEN_GPUS", text)
         fill = (ROOT / "scripts" / "run_contest_fill_queue.py").read_text()
@@ -656,6 +680,85 @@ class ContestFillTest(unittest.TestCase):
                 ["python", "/repo/scripts/run_contest_fill_queue.py", "--dry-run"]
             )
         )
+
+    def test_fill_deer_waits_for_leftover_and_uses_official_ids(self) -> None:
+        self.assertEqual(
+            LOCAL_FILL_MODELS,
+            (
+                "r1_7b",
+                "nemotron_8b",
+                "qwen3_4b",
+                "qwen3_8b",
+                "r1_14b",
+                "r1_1p5b",
+                "r1_llama_8b",
+            ),
+        )
+        self.assertTrue(
+            {"r1_32b", "qwen3_30b_a3b", "qwen3_32b", "qwq_32b"}.isdisjoint(
+                LOCAL_FILL_MODELS
+            )
+        )
+        deer = deer_task("qwen3_8b", "hmmt25", 42)
+        self.assertEqual(deer.task_id, "deer__qwen3_8b__hmmt25__s42")
+        self.assertEqual(deer.phase, "followon_deer")
+        self.assertEqual(deer.kind, "deer")
+        self.assertFalse(contest_task_ready(self.paths, deer))
+        ok, reason = fill_task_complete(self.paths, deer)
+        self.assertFalse(ok)
+        self.assertIn("waiting leftover", reason)
+
+        self._jobs("qwen3_8b", "hmmt25", 42, count=1)
+        protocol = protocol_for("qwen3_8b")
+        leftover = self.paths.score_dir(
+            "qwen3_8b", "hmmt25", 42, FIRSTWIN, k=4, lexicon="core"
+        )
+        self._write(
+            leftover / "shard_0.jsonl",
+            [
+                {
+                    "uid": "qwen3_8b:hmmt25:42:firstwin:0",
+                    "dataset": "hmmt25",
+                    "status": "ok",
+                    "gt": "42",
+                    "gold_error": "",
+                    "protocol_id": protocol.protocol_id,
+                    "max_model_len": protocol.max_model_len,
+                    "truncated_answer_fix_tokens": protocol.answer_fix_tokens,
+                    "fullcot_generation_tokens": protocol.generation_tokens,
+                }
+            ],
+        )
+        self.assertFalse(fill_needs_prereq(self.paths, "qwen3_8b", "hmmt25", 42))
+        self.assertTrue(contest_task_ready(self.paths, deer))
+        ok, reason = fill_task_complete(self.paths, deer)
+        self.assertFalse(ok)
+        self.assertNotIn("waiting leftover", reason)
+
+        leftover_task = plws_task("r1_llama_8b", "amc23", 42)
+        self._jobs("r1_llama_8b", "amc23", 42, count=1)
+        taken = fill_dispatch([deer, leftover_task], 1, self.paths)
+        self.assertEqual([task.task_id for task in taken], [leftover_task.task_id])
+        sample = prereq_task("r1_llama_8b", "amc23", 1)
+        taken = fill_dispatch([deer, sample], 1, self.paths)
+        self.assertTrue(fill_needs_fullcot_sample(self.paths, sample))
+        self.assertEqual([task.task_id for task in taken], [sample.task_id])
+
+        tasks = build_fill_tasks(
+            self.paths,
+            models=("qwen3_8b",),
+            datasets=("hmmt25",),
+            seeds=(42,),
+        )
+        self.assertEqual(
+            [task.task_id for task in tasks],
+            [
+                "plws__qwen3_8b__hmmt25__s42",
+                "deer__qwen3_8b__hmmt25__s42",
+            ],
+        )
+
+
 class GpuLeaseReleaseTest(unittest.TestCase):
     def test_puma_trial_shutdown_does_not_free_cards(self) -> None:
         text = (

@@ -144,6 +144,32 @@ def write_json(path: Path, payload: Any) -> None:
     tmp.replace(path)
 
 
+def leftover_shard_complete(shard: Path) -> bool:
+    """Refuse to rewrite a leftover shard that is still being generated."""
+
+    stem = shard.name
+    if not (stem.startswith("shard_") and stem.endswith(".jsonl")):
+        return True
+    index = stem[len("shard_") : -len(".jsonl")]
+    status_path = shard.with_name(f"status_shard_{index}.json")
+    if not status_path.is_file():
+        return True
+    try:
+        state = json.loads(status_path.read_text(encoding="utf-8")).get("state")
+    except (OSError, json.JSONDecodeError):
+        return False
+    return state == "succeeded"
+
+
+def leftover_has_reuse_evidence(records: list[dict]) -> bool:
+    return all(
+        has_gold(record.get("gt"))
+        and "gold_error" in record
+        and not record.get("gold_error")
+        for record in records
+    )
+
+
 def audit_plws_records(
     label: str,
     records: list[dict],
@@ -178,6 +204,36 @@ def audit_plws_records(
     return finding, changed
 
 
+def audit_puma_file(
+    label: str,
+    path: Path,
+    *,
+    fix: bool,
+    workers: int,
+) -> tuple[list[Finding], dict[int, Any]]:
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(rows, list):
+        rows = rows.get("rows", [])
+    gold_by_q = {int(row["question_idx"]): row.get("ground_truth") for row in rows}
+    findings: list[Finding] = []
+    dirty = False
+    for flag, answer_key in PUMA_FLAGS:
+        finding, changed = audit_records(
+            f"{label}/{flag}",
+            rows,
+            flag,
+            answer_key,
+            lambda row: row.get("ground_truth"),
+            workers,
+        )
+        findings.append(finding)
+        dirty = dirty or changed
+    if dirty and fix:
+        backup_once(path)
+        write_json(path, rows)
+    return findings, gold_by_q
+
+
 def audit_cell(
     paths: PLWSPaths,
     model: str,
@@ -189,52 +245,65 @@ def audit_cell(
     plws_evidence_only: bool = False,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    stats_path = paths.puma_statistics_path(model, dataset, seed)
     gold_by_q: dict[int, Any] = {}
-
+    stats_path = paths.puma_statistics_path(model, dataset, seed)
     if stats_path.is_file():
-        rows = json.loads(stats_path.read_text(encoding="utf-8"))
-        gold_by_q = {
-            int(row["question_idx"]): row.get("ground_truth") for row in rows
-        }
-    if stats_path.is_file() and not plws_evidence_only:
-        dirty = False
-        puma_findings: list[Finding] = []
-        for flag, answer_key in PUMA_FLAGS:
-            finding, changed = audit_records(
-                f"{model} {dataset} s{seed} puma/{flag}",
-                rows,
-                flag,
-                answer_key,
-                lambda row: row.get("ground_truth"),
-                workers,
+        if plws_evidence_only:
+            rows = json.loads(stats_path.read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                rows = rows.get("rows", [])
+            gold_by_q = {
+                int(row["question_idx"]): row.get("ground_truth") for row in rows
+            }
+        else:
+            extra, gold_by_q = audit_puma_file(
+                f"{model} {dataset} s{seed} puma",
+                stats_path,
+                fix=fix,
+                workers=workers,
             )
-            findings.append(finding)
-            puma_findings.append(finding)
-            dirty = dirty or changed
-        if dirty and fix:
-            backup_once(stats_path)
-            write_json(stats_path, rows)
+            findings.extend(extra)
+            blocked = any(
+                finding.review or finding.no_gold or finding.errors
+                for finding in extra
+            )
+            if fix and not blocked:
+                write_puma_verification_marker(stats_path)
+
+    # The main table prefers this file for PUMA Acc when it exists.
+    backfill = (
+        paths.results
+        / "baselines"
+        / "puma"
+        / "backfill"
+        / model
+        / dataset
+        / f"seed_{seed}"
+        / "statistics.json"
+    )
+    if (
+        not plws_evidence_only
+        and backfill.is_file()
+        and backfill.resolve() != stats_path.resolve()
+    ):
+        extra, backfill_gold = audit_puma_file(
+            f"{model} {dataset} s{seed} puma_backfill",
+            backfill,
+            fix=fix,
+            workers=workers,
+        )
+        findings.extend(extra)
+        gold_by_q = {**gold_by_q, **backfill_gold}
         blocked = any(
             finding.review or finding.no_gold or finding.errors
-            for finding in puma_findings
+            for finding in extra
         )
         if fix and not blocked:
-            write_puma_verification_marker(stats_path)
+            write_puma_verification_marker(backfill)
 
-    shard = (
-        paths.score_dir(model, dataset, seed, "firstwin", k=4, lexicon="core")
-        / "shard_0.jsonl"
-    )
-    if shard.is_file():
-        records = load_jsonl(shard)
-        if plws_evidence_only and all(
-            has_gold(record.get("gt"))
-            and "gold_error" in record
-            and not record.get("gold_error")
-            for record in records
-        ):
-            return findings
+    score_dir = paths.score_dir(model, dataset, seed, "firstwin", k=4, lexicon="core")
+    shards = sorted(score_dir.glob("shard_*.jsonl"))
+    if shards:
         jobs_gold = {
             int(job["question_idx"]): job.get("gt")
             for job in job_rows(paths, model, dataset, seed)
@@ -246,17 +315,24 @@ def audit_cell(
             gold = jobs_gold.get(question)
             return gold if has_gold(gold) else gold_by_q.get(question)
 
-        finding, changed = audit_plws_records(
-            f"{model} {dataset} s{seed} plws/new_gold_ok",
-            records,
-            plws_gold,
-            fix=fix,
-            workers=workers,
-        )
-        findings.append(finding)
-        if changed and fix:
-            backup_once(shard)
-            write_jsonl(shard, records)
+        for shard in shards:
+            records = load_jsonl(shard)
+            if plws_evidence_only and leftover_has_reuse_evidence(records):
+                continue
+            finding, changed = audit_plws_records(
+                f"{model} {dataset} s{seed} plws/{shard.name}/new_gold_ok",
+                records,
+                plws_gold,
+                fix=fix,
+                workers=workers,
+            )
+            findings.append(finding)
+            if changed and fix:
+                if not leftover_shard_complete(shard):
+                    print(f"SKIP write {shard}: leftover still running", flush=True)
+                    continue
+                backup_once(shard)
+                write_jsonl(shard, records)
 
     return findings
 

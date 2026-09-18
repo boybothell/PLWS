@@ -26,7 +26,9 @@ plws_runtime_init() {
   PLWS_MODELS_ROOT="${PLWS_MODELS_ROOT:-/mnt/d/lsj/models}"
   PUMA_ROOT="${PUMA_ROOT:-$ROOT/../PUMA}"
   PLWS_DATA_ROOT="${PLWS_DATA_ROOT:-$PUMA_ROOT/data}"
+  PLWS_DEPLOY_PROFILE="${PLWS_DEPLOY_PROFILE:-local_48g}"
   export PY PLWS_PY="$PY" PLWS_MODELS_ROOT PUMA_ROOT PLWS_DATA_ROOT
+  export PLWS_DEPLOY_PROFILE
 }
 
 plws_model_path() {

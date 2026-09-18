@@ -440,6 +440,42 @@ def deer_seed_n(expect_n: int) -> int:
     return expect_n // len(SEEDS)
 
 
+def puma_statistics_verified(
+    paths: PLWSPaths, model: str, dataset: str, seed: int
+) -> bool:
+    """Official mean@3 only accepts PUMA flags stamped by the unified grader."""
+
+    from plws.puma_grading import puma_grades_verified
+
+    official_path = paths.puma_statistics_path(model, dataset, seed)
+    if not official_path.is_file() or not puma_grades_verified(official_path):
+        return False
+    delivery_path = puma_delivery_path(paths, model, dataset, seed)
+    if delivery_path.resolve() == official_path.resolve():
+        return True
+    return delivery_path.is_file() and puma_grades_verified(delivery_path)
+
+
+def leftover_grades_verified(
+    paths: PLWSPaths,
+    model: str,
+    dataset: str,
+    seed: int,
+    *,
+    allow_legacy: bool = False,
+) -> bool:
+    """Official leftover rows must carry gt/gold_error; legacy AMC may skip."""
+
+    if allow_legacy:
+        return True
+    from plws.contest import contest_plws_complete
+    from plws.matrix import jobs_present
+
+    if not jobs_present(paths, model, dataset, seed):
+        return True
+    return contest_plws_complete(paths, model, dataset, seed)[0]
+
+
 def seed_official_puma_ready(
     paths: PLWSPaths, model: str, dataset: str, seed: int, per_n: int
 ) -> bool:
@@ -571,16 +607,15 @@ def _grader():
         puma_root = ROOT.parent / "PUMA"
         sys.path.insert(0, str(puma_root))
         sys.path.insert(0, str(puma_root / "puma"))
-        from math_grader import check_is_correct  # noqa: PLC0415
         from prompt_utils import get_task_type  # noqa: PLC0415
 
-        _GRADER = (_extract_answer, get_task_type, check_is_correct)
+        _GRADER = (_extract_answer, get_task_type)
     return _GRADER
 
 
 def grade_deer_item(item: tuple[str, str, str, float]) -> tuple[bool, float]:
     dataset, text, gold, tok = item
-    extract_answer, get_task_type, _check = _grader()
+    extract_answer, get_task_type = _grader()
     pred = extract_answer(str(text or ""), get_task_type(dataset))
     ok, error = grade(pred, gold)
     if error:

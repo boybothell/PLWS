@@ -50,6 +50,11 @@ fi
 
 mkdir -p "$PUMA_DIR"
 RUN_FINISHED=0
+if [[ -f "$PUMA_DIR/prefixed_answers.json" ]]; then
+  PUMA_BUDGET_STATUS="preexisting_requires_audit"
+else
+  PUMA_BUDGET_STATUS="enforced"
+fi
 write_status() {
   local state="$1" message="${2:-}"
   "$PY" - "$PUMA_DIR/status.json" "$state" "$message" <<'PY'
@@ -70,19 +75,43 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
-"$PY" - "$PUMA_DIR/manifest.json" "$MODEL_TAG" "$MODEL" "$DATASET" "$SEED" "$SAMPLE" "$BENCH" <<'PY'
+"$PY" - "$PUMA_DIR/manifest.json" "$MODEL_TAG" "$MODEL" "$DATASET" "$SEED" "$SAMPLE" "$BENCH" "$GPU" "${PUMA_VLLM_GPU_MEMORY_UTILIZATION:-0.90}" "$PUMA_BUDGET_STATUS" <<'PY'
 import sys
 from plws.artifacts import atomic_write_json, utc_now
+from plws.deploy import deployment_manifest
+from plws.protocol import (
+    FULLCOT_GENERATION_TOKENS,
+    MAX_MODEL_LEN,
+    PROMPT_RESERVE_TOKENS,
+    PUMA_FINAL_REGENERATION_CAP,
+    PROTOCOL_ID,
+    TRUNCATED_ANSWER_FIX_TOKENS,
+)
+
+gpu_items = [item for item in sys.argv[8].split(",") if item]
 atomic_write_json(sys.argv[1], {
     "schema_version": 1,
     "method": "puma",
     "experiment": "official",
+    "protocol_id": PROTOCOL_ID,
     "model_tag": sys.argv[2],
     "model": sys.argv[3],
     "dataset": sys.argv[4],
     "seed": int(sys.argv[5]),
     "sample": sys.argv[6],
     "benchmark": sys.argv[7],
+    "prompt_version": "default",
+    "fullcot_generation_tokens": FULLCOT_GENERATION_TOKENS,
+    "truncated_answer_fix_tokens": TRUNCATED_ANSWER_FIX_TOKENS,
+    "prompt_reserve_tokens": PROMPT_RESERVE_TOKENS,
+    "max_model_len": MAX_MODEL_LEN,
+    "puma_final_regeneration_cap": PUMA_FINAL_REGENERATION_CAP,
+    "puma_per_question_budget_status": sys.argv[10],
+    "deployment": deployment_manifest(
+        sys.argv[2],
+        tensor_parallel_size=len(gpu_items) or 1,
+        gpu_memory_utilization=float(sys.argv[9]),
+    ),
     "created_at": utc_now(),
 })
 PY
@@ -90,6 +119,19 @@ write_status running
 
 if [[ -f "$PUMA_DIR/statistics.json" && -f "$PUMA_DIR/prefixed_answers.json" ]]; then
   verify_statistics
+  BUDGET_AUDIT="$("$PY" -m plws.puma_budget "$PUMA_DIR/prefixed_answers.json")"
+  "$PY" - "$PUMA_DIR/manifest.json" "$BUDGET_AUDIT" <<'PY'
+import json
+import sys
+from pathlib import Path
+from plws.artifacts import atomic_write_json
+
+path = Path(sys.argv[1])
+manifest = json.loads(path.read_text(encoding="utf-8"))
+manifest["puma_per_question_budget_status"] = "preexisting_audited"
+manifest["puma_budget_audit"] = json.loads(sys.argv[2])
+atomic_write_json(path, manifest)
+PY
   write_status succeeded "existing complete output reused"
   RUN_FINISHED=1
   echo "[puma-official] skip complete $MODEL_TAG $DATASET seed=$SEED"
@@ -130,6 +172,20 @@ cd "$PUMA_ROOT"
 bash run_pipeline.sh "$LOCAL" "$PUMA_DIR" "$MODEL" "$DATASET" "$BENCH" \
   2>&1 | tee -a "$PUMA_DIR/run.log"
 verify_statistics
+BUDGET_AUDIT="$("$PY" -m plws.puma_budget "$PUMA_DIR/prefixed_answers.json")"
+"$PY" - "$PUMA_DIR/manifest.json" "$BUDGET_AUDIT" <<'PY'
+import json
+import sys
+from pathlib import Path
+from plws.artifacts import atomic_write_json, utc_now
+
+path = Path(sys.argv[1])
+manifest = json.loads(path.read_text(encoding="utf-8"))
+manifest["puma_per_question_budget_status"] = "enforced"
+manifest["puma_budget_audit"] = json.loads(sys.argv[2])
+manifest["completed_at"] = utc_now()
+atomic_write_json(path, manifest)
+PY
 write_status succeeded
 RUN_FINISHED=1
 echo "[puma-official] done $PUMA_DIR"

@@ -105,5 +105,34 @@ class PumaGradeVerificationTest(unittest.TestCase):
         self.assertFalse(puma_grades_verified(self.path))
 
 
+class OfficialTableVerificationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_mean3_helpers_require_stamped_statistics(self) -> None:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from plws.paths import PLWSPaths
+        from plws.puma_grading import write_puma_verification_marker
+        from report_fullcot_puma_plws import (
+            leftover_grades_verified,
+            puma_statistics_verified,
+        )
+
+        paths = PLWSPaths(self.root)
+        stats = paths.puma_output_dir("qwen3_4b", "aime25", 42) / "statistics.json"
+        stats.parent.mkdir(parents=True, exist_ok=True)
+        stats.write_text(json.dumps([row(original=True, compressed=True)]))
+        self.assertFalse(puma_statistics_verified(paths, "qwen3_4b", "aime25", 42))
+        write_puma_verification_marker(stats)
+        self.assertTrue(puma_statistics_verified(paths, "qwen3_4b", "aime25", 42))
+        self.assertTrue(
+            leftover_grades_verified(paths, "qwen3_4b", "aime25", 42)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

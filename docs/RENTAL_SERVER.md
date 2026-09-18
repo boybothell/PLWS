@@ -1,6 +1,12 @@
 # 租卡服务器运行手册
 
-本手册只覆盖四个大模型的 PUMA、PLWS、DEER。
+本手册覆盖 A800 云端四个大模型的现有 PUMA、PLWS、DEER 流水，并登记
+Answer Convergence 与 Dynasor 的计划入口。云仓库只推本 `plws` repo；
+额外基线源码规范见 [`../baselines/README.md`](../baselines/README.md)。
+四个早停基线、PLWS 和全部 11 个模型的统一方法配置见
+[`BASELINE_ALIGNMENT_AND_CLOUD_RUNBOOK.md`](BASELINE_ALIGNMENT_AND_CLOUD_RUNBOOK.md)；
+本页只保留租卡部署操作。
+
 现行新跑是六集 × 第一波三个 seed：
 
 ```text
@@ -17,12 +23,12 @@ SEEDS=42,0,1
 
 ## 1. 克隆与环境
 
-推荐目录：
+推荐运行目录：
 
 ```text
 work/
-├── plws/
-└── PUMA/
+├── plws/     # 唯一需要推送/更新的云仓库
+└── PUMA/     # bootstrap_puma.sh 从固定 commit 临时重建的运行依赖
 ```
 
 ```bash
@@ -44,6 +50,16 @@ uv pip install --python "$PLWS_PY" -r requirements-dev.txt
 # 新队列用现行六集；其余三份只服务已有产物续跑/核验。
 bash scripts/bootstrap_puma.sh
 ```
+
+不要把 PLWS 或 PUMA 再复制进 `plws/baselines/`。PLWS 的唯一源码仍在
+`src/plws/` 与 `scripts/`；PUMA 的唯一适配证据是固定 commit、
+`vendor/patches/` 和 `bootstrap_puma.sh`。`plws/baselines/` 只收 DEER、Answer Convergence、
+Dynasor 三种额外对比基线的适配层。
+
+本轮只落统一文档，不创建空方法目录。三种额外基线的代码会随统一 `run_cell.sh`
+一起落地。正式可用状态以
+[`BASELINE_ALIGNMENT_AND_CLOUD_RUNBOOK.md`](BASELINE_ALIGNMENT_AND_CLOUD_RUNBOOK.md)
+第 15 节为准，不要因文档出现计划路径就认定 runner 已可运行。
 
 ### 云服务器如何拉远程
 
@@ -126,7 +142,7 @@ bash scripts/preflight_rental_server.sh
 
 ## 4. 运行一个 cell
 
-统一入口为 `scripts/run_large_model_cell.sh`。例如在一张 80 GB 卡上跑
+现有 PUMA / PLWS / DEER 的统一入口为 `scripts/run_large_model_cell.sh`。例如在一张 80 GB 卡上跑
 Qwen3-30B-A3B、AIME25、seed 0 的三种方法：
 
 ```bash
@@ -147,13 +163,22 @@ tmux ls
 - `deer`：只跑统一 host 的 DEER。
 - `puma,plws,deer`：顺序跑完整 cell。
 
+Answer Convergence 与 Dynasor 尚未加入 `STAGES`：前者现行 wrapper 仍需去掉本机
+venv 路径，后者 canonical runner 尚未实现。在 runbook 第 15 节标为可用之前，
+云端不得把它们加入正式主表。
+
 前置内部顺序是 Full-CoT → PUMA → dense → firstwin jobs。dense 会直接复用
 PUMA `trial_answers.json` 中已经生成的切点，只补 PUMA embedding filter 跳过的
 步骤，不再对重叠切点做第二次 GPU 试答。合并后必须逐步覆盖完整 Full-CoT
 轨迹；复用来源和步数写在 dense shard 下的计划与结果 JSON 中。
 
-一张 80 GB 卡能否容纳 38K 上下文必须以 smoke/预检后的实际加载为准。放不下时
-使用 `GPU=0,1 PLWS_TP=2`，不能缩短 32K host 预算。
+一张 80 GB 卡能否容纳 38K 上下文必须以 smoke/预检后的实际加载为准。四个大模型
+目标部署都是 TP=1；放不下时使用 `GPU=0,1 PLWS_TP=2`，不能缩短 32K host 预算。
+
+云端与本机不需要把硬件配置写成同一组数。可按 A800 调整 TP、
+`gpu_memory_utilization`、`max_num_seqs`、batch 和 GPU 池，后续统一收进
+`configs/deploy/a800_80g.toml`。不可调整的是 prompt、checkpoint 交付采样、
+32768 / 2048 / 3072 / 37888 host 条件以及各方法自身阈值；这些才决定结果是否可比。
 
 ## 5. 多卡调度
 
@@ -164,10 +189,16 @@ MODELS=qwen3_30b_a3b,r1_32b,qwen3_32b,qwq_32b
 DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,hmmt25,amc23
 SEEDS=42,0,1
 
+# 工位必须设 PLWS_MACHINE。账本只写 results/runs/machines/<机名>/，
+# 不要用本机历史队列名。格子产物仍写规范路径。
+# 云端不用拷 tests/，也不要在工位跑 pytest。
+export PLWS_MACHINE=a800
+
 tmux new-session -d -s plws-large-fill \
   "cd '$PLWS_ROOT' && \
    PLWS_PY='$PLWS_PY' PUMA_ROOT='$PUMA_ROOT' \
    PLWS_MODELS_ROOT='$PLWS_MODELS_ROOT' PLWS_LARGE_TP=1 \
+   PLWS_MACHINE='$PLWS_MACHINE' \
    VLLM_GPU_MEMORY_UTILIZATION=0.97 \
    VLLM_MAX_NUM_SEQS=8 \
    VLLM_MAX_NUM_BATCHED_TOKENS=8192 \

@@ -13,7 +13,6 @@ family = "deepseek-r1-distill-qwen"
 [models.r1_32b]
 path = "DeepSeek-R1-Distill-Qwen-32B"
 family = "deepseek-r1-distill-qwen"
-tensor_parallel_size = 2
 
 [models.nemotron_8b]
 path = "Llama-3.1-Nemotron-Nano-8B-v1"
@@ -30,14 +29,11 @@ family = "qwen3"
 [models.qwen3_30b_a3b]
 path = "Qwen3-30B-A3B-Thinking-2507"
 family = "qwen3"
-tensor_parallel_size = 2
 
 [models.qwq_32b]
 path = "QwQ-32B"
 family = "qwq"
-tensor_parallel_size = 2
 
 [models.qwen3_32b]
 path = "Qwen3-32B"
 family = "qwen3"
-tensor_parallel_size = 2

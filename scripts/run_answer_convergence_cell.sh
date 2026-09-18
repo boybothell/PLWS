@@ -3,16 +3,31 @@
 set -euo pipefail
 
 ROOT="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-PY="${PY:-/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm/.venv/bin/python}"
-MODEL="${MODEL:?set MODEL}"
 MODEL_TAG="${MODEL_TAG:?set MODEL_TAG}"
 DATASET="${DATASET:?set DATASET}"
 SEED="${SEED:?set SEED}"
 GPU="${GPU:?set GPU}"
-OUT="${OUT:?set OUT}"
 LIMIT="${LIMIT:-0}"
 
-SAMPLE="$ROOT/samples/$MODEL_TAG/$DATASET/seed_$SEED/answers.json"
+# shellcheck source=lib/runtime.sh
+source "$ROOT/scripts/lib/runtime.sh"
+plws_runtime_init
+PUMA_ROOT="$(cd "$PUMA_ROOT" && pwd)"
+MODEL="${MODEL:-$(plws_model_path "$MODEL_TAG")}"
+OUT="${OUT:-$ROOT/results/baselines/answer_convergence/puma_fullcot_32k_v2/$MODEL_TAG/$DATASET/seed_$SEED}"
+DATASET_FILE="${DATASET_FILE:-$PLWS_DATA_ROOT/${DATASET}_test.jsonl}"
+PROFILE_VALUES="$(
+  PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PY" - <<'PY'
+from plws.deploy import load_deployment_profile
+p = load_deployment_profile()
+print(p.gpu_memory_utilization, p.max_num_seqs)
+PY
+)"
+read -r PROFILE_GPU_MEMORY PROFILE_MAX_NUM_SEQS <<<"$PROFILE_VALUES"
+GPU_MEMORY_UTILIZATION="${AC_GPU_MEMORY_UTILIZATION:-$PROFILE_GPU_MEMORY}"
+MAX_NUM_SEQS="${AC_MAX_NUM_SEQS:-$PROFILE_MAX_NUM_SEQS}"
+
+SAMPLE="${SAMPLE:-$ROOT/samples/$MODEL_TAG/$DATASET/seed_$SEED/answers.json}"
 EXPECTED="$("$PY" - "$SAMPLE" "$LIMIT" <<'PY'
 import json
 import sys
@@ -66,17 +81,9 @@ fi
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export VLLM_LENS_DISABLE=1
-export LD_LIBRARY_PATH="$(
-  "$PY" - <<'PY'
-from pathlib import Path
-root = Path("/mnt/d/lsj/visual-latent-tts/repos/okay-budget-vllm")
-print(":".join(sorted({
-    str(path)
-    for path in (root / ".venv" / "lib").glob("**/nvidia/*/lib")
-    if path.is_dir()
-})))
-PY
-):${LD_LIBRARY_PATH:-}"
+export PUMA_ROOT
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+plws_export_cuda_runtime
 
 echo "[answer-convergence-cell] preflight $MODEL_TAG $DATASET seed=$SEED gpu=$GPU"
 "$PY" - <<'PY'
@@ -93,17 +100,20 @@ args=(
   --dataset "$DATASET"
   --seed "$SEED"
   --sample "$SAMPLE"
+  --dataset-file "$DATASET_FILE"
   --output-dir "$OUT"
   --threshold 10
   --probe-max-tokens 100
   --max-model-len 37888
+  --max-num-seqs "$MAX_NUM_SEQS"
+  --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
 )
 if [[ "$LIMIT" -gt 0 ]]; then
   args+=(--limit "$LIMIT")
 fi
 
 echo "[answer-convergence-cell] start $(date -Is)"
-PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PY" "${args[@]}"
+"$PY" "${args[@]}"
 
 if ! complete_output; then
   echo "ERROR: incomplete Answer Convergence cell n=$EXPECTED" >&2

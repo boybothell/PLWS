@@ -4,7 +4,11 @@ import unittest
 from pathlib import Path
 
 from plws.host_protocol import validate_fullcot_sample_meta
-from plws.protocol import MAX_MODEL_LEN, PROTOCOL_ID
+from plws.protocol import (
+    MAX_MODEL_LEN,
+    PROTOCOL_ID,
+    puma_final_regeneration_tokens,
+)
 
 
 class HostProtocolTest(unittest.TestCase):
@@ -60,6 +64,18 @@ class HostProtocolTest(unittest.TestCase):
                 dataset="gpqa-diamond",
                 seed=42,
             )
+
+    def test_puma_regeneration_is_capped_by_remaining_host_budget(self) -> None:
+        self.assertEqual(puma_final_regeneration_tokens(100), 4096)
+        self.assertEqual(puma_final_regeneration_tokens(28672), 4096)
+        self.assertEqual(puma_final_regeneration_tokens(32000), 768)
+        self.assertEqual(puma_final_regeneration_tokens(32768), 0)
+
+    def test_puma_regeneration_rejects_invalid_inputs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "prefix_tokens"):
+            puma_final_regeneration_tokens(-1)
+        with self.assertRaisesRegex(ValueError, "requested_cap"):
+            puma_final_regeneration_tokens(1, requested_cap=0)
 
 
 if __name__ == "__main__":

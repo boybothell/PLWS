@@ -9,6 +9,10 @@ SEED="${SEED:?42|0|1|123|7}"
 GPU="${GPU:?one GPU or a comma-separated TP lane}"
 STAGES="${STAGES:-puma,plws,deer}"
 
+# shellcheck source=lib/runtime.sh
+source "$ROOT/scripts/lib/runtime.sh"
+plws_runtime_init
+
 case "$MODEL_TAG" in
   qwen3_30b_a3b|r1_32b|qwen3_32b|qwq_32b) ;;
   *)
@@ -34,7 +38,19 @@ case "$SEED" in
 esac
 
 export PLWS_ROOT="$ROOT" MODEL_TAG DATASET SEED GPU
-export PLWS_TP="${PLWS_TP:-$(awk -F',' '{print NF}' <<<"$GPU")}"
+EXPECTED_TP="$(
+  PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PY" - "$MODEL_TAG" <<'PY'
+import sys
+from plws.deploy import configured_tensor_parallel
+print(configured_tensor_parallel(sys.argv[1]))
+PY
+)"
+ACTUAL_TP="$(awk -F',' '{print NF}' <<<"$GPU")"
+if [[ "$ACTUAL_TP" -ne "$EXPECTED_TP" ]]; then
+  echo "ERROR: profile $PLWS_DEPLOY_PROFILE requires TP=$EXPECTED_TP for $MODEL_TAG; got GPU=$GPU" >&2
+  exit 2
+fi
+export PLWS_TP="$EXPECTED_TP"
 
 contains_stage() {
   [[ ",$STAGES," == *",$1,"* ]]
@@ -42,7 +58,7 @@ contains_stage() {
 
 for stage in ${STAGES//,/ }; do
   case "$stage" in
-    puma|plws|deer) ;;
+    puma|plws|deer|answer_convergence|dynasor) ;;
     *)
       echo "ERROR: unknown stage '$stage' in STAGES=$STAGES" >&2
       exit 2
@@ -62,4 +78,12 @@ fi
 
 if contains_stage deer; then
   bash "$ROOT/scripts/run_deer_official.sh"
+fi
+
+if contains_stage answer_convergence; then
+  bash "$ROOT/baselines/answer_convergence/run_cell.sh"
+fi
+
+if contains_stage dynasor; then
+  bash "$ROOT/baselines/dynasor/run_cell.sh"
 fi

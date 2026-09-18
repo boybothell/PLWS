@@ -18,11 +18,14 @@ import importlib
 import sys
 from pathlib import Path
 
+from plws.deploy import load_deployment_profile
 from plws.puma_official_conf import EMBEDDING_DIRNAME, embedding_model_path
 from plws.runtime import dataset_path, model_path
 
 root, puma = map(Path, sys.argv[1:3])
-models = ("qwen3_30b_a3b", "r1_32b", "qwen3_32b", "qwq_32b")
+profile = load_deployment_profile(root=root)
+models = profile.allowed_models
+print(f"[ok] deployment profile {profile.name}: {','.join(models)}")
 datasets = {
     "math-500": 500,
     "olympiadbench": 675,
@@ -44,6 +47,8 @@ for tag in models:
 required_puma = (
     puma / "puma" / "run_vllm.py",
     puma / "puma" / "gen_trial_answers.py",
+    puma / "puma" / "gen_prefixed_answers.py",
+    puma / "puma" / "math_grader.py",
     puma / "puma" / "vllm_shutdown.py",
     puma / "baselines" / "deer" / "vllm_deer.py",
     puma / "baselines" / "deer" / "canonical_protocol.py",
@@ -98,7 +103,15 @@ for slug, expected in datasets.items():
         if pinned.is_file() and path != pinned and path.read_bytes() != pinned.read_bytes():
             errors.append(f"dataset differs from repo pin: {path}")
 
-for module in ("torch", "transformers", "vllm", "plws.contest"):
+for module in (
+    "torch",
+    "transformers",
+    "vllm",
+    "nltk",
+    "plws.contest",
+    "plws.deploy",
+    "plws.dynasor",
+):
     try:
         loaded = importlib.import_module(module)
     except Exception as exc:  # noqa: BLE001
@@ -119,9 +132,20 @@ for script in (
     root / "scripts" / "run_contest_prereq_cell.sh",
     root / "scripts" / "run_contest_plws_cell.sh",
     root / "scripts" / "run_deer_official.sh",
+    root / "baselines" / "deer" / "run_cell.sh",
+    root / "baselines" / "answer_convergence" / "run_cell.sh",
+    root / "baselines" / "dynasor" / "run_cell.sh",
+    root / "baselines" / "dynasor" / "runner.py",
 ):
     if not script.is_file():
         errors.append(f"missing runner: {script}")
+
+try:
+    import nltk
+
+    nltk.sent_tokenize("Preflight sentence.")
+except Exception as exc:  # noqa: BLE001
+    errors.append(f"NLTK punkt preflight failed: {exc}")
 
 if errors:
     print("\n".join(f"[error] {error}" for error in errors), file=sys.stderr)

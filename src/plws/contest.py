@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from plws.artifacts import load_jsonl
+from plws.deploy import configured_tensor_parallel
 from plws.grading import has_gold
 from plws.matrix import (
     FIRSTWIN,
     FROZEN_FULLCOT,
+    deer_complete,
     dense_complete,
     job_rows,
     jobs_present,
@@ -48,6 +50,16 @@ FILL_MODELS = (
     "qwq_32b",
 )
 FILL_FOLLOWON = frozenset({"qwen3_8b", "r1_1p5b", "r1_llama_8b", "r1_32b"})
+# Local fill: official six × first seeds, no 30B+ (those stay on the rental).
+LOCAL_FILL_MODELS = (
+    "r1_7b",
+    "nemotron_8b",
+    "qwen3_4b",
+    "qwen3_8b",
+    "r1_14b",
+    "r1_1p5b",
+    "r1_llama_8b",
+)
 TWO_GPU_MODELS = frozenset({"qwen3_30b_a3b", "qwq_32b", "qwen3_32b", "r1_32b"})
 MODELS = {
     tag: str(model_path(tag))
@@ -113,6 +125,8 @@ PHASES = (
     "contest_plws",
     "followon_prereq",
     "followon_plws",
+    "contest_deer",
+    "followon_deer",
 )
 BATCH_SIZE = 8
 GPU_COUNT = 2
@@ -228,15 +242,7 @@ def batch_size(model: str) -> int:
 
 
 def gpu_count(model: str) -> int:
-    if model not in TWO_GPU_MODELS:
-        return 1
-    override = os.environ.get("PLWS_LARGE_TP") or os.environ.get("PLWS_TP")
-    if override:
-        value = int(override)
-        if value < 1:
-            raise ValueError(f"PLWS_LARGE_TP must be positive, got {value}")
-        return value
-    return 2
+    return configured_tensor_parallel(model)
 
 
 def model_rank(model: str) -> int:
@@ -267,7 +273,7 @@ def fill_dataset_rank(dataset: str) -> int:
 
 
 def fill_kind_rank(kind: str) -> int:
-    return 0 if kind == "plws" else 1
+    return {"plws": 0, "deer": 1, "prereq": 2}.get(kind, 3)
 
 
 def fill_sort_key(task: ContestTask) -> tuple[int, int, int, int, str]:
@@ -332,9 +338,11 @@ def may_sample_fullcot(
 
 
 def contest_task_ready(paths: PLWSPaths, task: ContestTask) -> bool:
-    if task.kind != "plws":
-        return True
-    return jobs_present(paths, task.model, task.dataset, task.seed)
+    if task.kind == "plws":
+        return jobs_present(paths, task.model, task.dataset, task.seed)
+    if task.kind == "deer":
+        return fill_plws_complete(paths, task.model, task.dataset, task.seed)[0]
+    return True
 
 
 def contest_blocked_phases(
@@ -662,15 +670,18 @@ def fill_dispatch(
     """Fill idle GPUs longest-sample first, then PUMA, then leftover.
 
     Qwen3/R1 non-Olympiad leftover and the prereqs that unlock it are the
-    explicit top lane. Otherwise keep the four cards on the same wave when
-    that wave can still absorb them: if any live cell is sampling, do not
-    start normal PUMA or leftover on a freed card. Hold a TP=2 pair only when
-    no 1-GPU work can use the odd card.
+    explicit top lane. If a Full-CoT sample is live and another sample is
+    ready, keep the freed card on that sample wave. Once the wave cannot
+    absorb more cards, other datasets may take PUMA or leftover. Hold a
+    TP=2 pair only when no 1-GPU work can use the odd card.
     """
 
     ready = [task for task in pending if contest_task_ready(paths, task)]
     sampling_live = any(
         fill_needs_fullcot_sample(paths, task) for task in running_tasks
+    )
+    sample_wave_can_absorb = sampling_live and any(
+        fill_needs_fullcot_sample(paths, task) for task in ready
     )
     stages = tuple(
         [
@@ -678,7 +689,7 @@ def fill_dispatch(
             for task in ready
             if fill_stage(paths, task) == stage
         ]
-        if stage <= 2 or not sampling_live
+        if stage <= 2 or not sample_wave_can_absorb
         else []
         for stage in range(5)
     )
@@ -919,6 +930,23 @@ def plws_task(model: str, dataset: str, seed: int) -> ContestTask:
     )
 
 
+def deer_task(model: str, dataset: str, seed: int) -> ContestTask:
+    phase = (
+        "followon_deer"
+        if model in FOLLOWON_MODELS or model in FILL_FOLLOWON
+        else "contest_deer"
+    )
+    return ContestTask(
+        task_id=f"deer__{model}__{dataset}__s{seed}",
+        phase=phase,
+        gpu_count=gpu_count(model),
+        kind="deer",
+        model=model,
+        dataset=dataset,
+        seed=seed,
+    )
+
+
 def build_tasks(
     paths: PLWSPaths,
     *,
@@ -995,6 +1023,8 @@ def fill_legacy_plws_complete(
 def fill_needs_prereq(
     paths: PLWSPaths, model: str, dataset: str, seed: int
 ) -> bool:
+    if fill_plws_complete(paths, model, dataset, seed)[0]:
+        return False
     if fill_legacy_plws_complete(paths, model, dataset, seed)[0]:
         return False
     if puma_complete(paths, model, dataset, seed) and not puma_grades_verified(
@@ -1062,6 +1092,7 @@ def build_fill_tasks(
                 if fill_needs_prereq(paths, model, dataset, seed):
                     tasks.append(prereq_task(model, dataset, seed))
                 tasks.append(plws_task(model, dataset, seed))
+                tasks.append(deer_task(model, dataset, seed))
     return sorted(tasks, key=fill_sort_key)
 
 
@@ -1133,6 +1164,18 @@ def fill_task_complete(paths: PLWSPaths, task: ContestTask) -> tuple[bool, str]:
             shard_id=task.shard_id,
             num_shards=task.num_shards,
         )
+    if task.kind == "deer":
+        leftover_ok, leftover_reason = fill_plws_complete(
+            paths,
+            task.model,
+            task.dataset,
+            task.seed,
+            shard_id=task.shard_id,
+            num_shards=task.num_shards,
+        )
+        if not leftover_ok:
+            return False, f"waiting leftover: {leftover_reason}"
+        return deer_complete(paths, task.model, task.dataset, task.seed)
     return False, f"unknown task kind {task.kind}"
 
 

@@ -1,0 +1,17 @@
+schema_version = 1
+name = "a800_80g"
+allowed_models = [
+  "qwen3_30b_a3b",
+  "r1_32b",
+  "qwen3_32b",
+  "qwq_32b",
+]
+gpu_memory_utilization = 0.90
+max_num_seqs = 64
+serialize_cold_load = true
+
+[tensor_parallel]
+qwen3_30b_a3b = 1
+r1_32b = 1
+qwen3_32b = 1
+qwq_32b = 1

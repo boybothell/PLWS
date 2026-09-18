@@ -75,6 +75,8 @@ mean@3 大约上浮 1.5–2.5pp（如 Qwen3-30B MATH-500 Full-CoT 94.47% →
 | `scripts/export_leftover_suppress_jobs.py` | 某集缺 gold 整集拒写，退出码非 0 |
 | `scripts/score_leftover_suppress.py` | 开跑前自检；空 gold 拒跑；记录 `gt` / `gold_error`；jobs gold 变了则 CPU 重判旧 shard |
 | `scripts/run_contest_fill_queue.py` | 占卡前 `require_grader()` |
+| `scripts/run_answer_convergence_cell.py` | 开跑前自检；Acc 走 `must_grade`，缺 gold / 判分崩溃不写 False |
+| `baselines/dynasor/runner.py` | 同上。早停仍用官方 `math_equal`，但必须先通过自检 |
 | `scripts/report_fullcot_puma_plws.py` | 出表前自检；并行判分改 `ProcessPoolExecutor`（函数名 `grade_deer_item` 是历史名，Full-CoT sample 判分也走它） |
 | `scripts/audit_grader_flags.py` | 重判已落盘旗标；默认只报；`--fix` 只升不降 |
 | `tests/test_grading.py` | 把上面三个洞钉成回归 |
@@ -91,6 +93,10 @@ statistics 后凭证会失效，该格会重新进入 prereq，而不是直接�
 shard 时重判本 shard 全部答案，只安全提升 False→True；缺 `gt` /
 `gold_error` 的旧脚本行不再算 protocol-valid 完成。判分异常或存量
 True→False 会直接阻断，不自动降级。
+
+Answer Convergence / Dynasor 恢复已有 record 或命中 `already complete`
+时也会先全量重判，并重写 final / summary 的 Acc；DEER 两个独立出分脚本
+使用 `grade_many`，不再使用会触发嵌套子进程问题的 `multiprocessing.Pool`。
 
 `check_is_correct` 返回 True 是「两式相等」的正证据；返回 False 仍可能是
 3 秒超时。因此 `--fix` **只把 False 升 True**，True→False 只进 `review`，

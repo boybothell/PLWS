@@ -11,14 +11,22 @@ results/
 ├── baselines/
 │   ├── puma/                                # PUMA
 │   ├── deer/puma_fullcot_32k_v2/            # 主表 DEER
+│   ├── answer_convergence/puma_fullcot_32k_v2/
+│   ├── dynasor/puma_fullcot_32k_v2/
 │   └── official/
 ├── upstream/dense_trials/                   # PLWS 冻结试答轨迹
 ├── runs/plws/window_first/                   # PLWS jobs、shards、manifest
 ├── reports/                                  # 可重建的机器汇总
 ├── cache/                                    # 可安全重建
 ├── archive/                                  # 只读历史，不得作新主表
-└── registry/
+├── registry/
+└── runs/machines/<机名>/<队列名>/            # 工位账本，见下方
 ```
+
+这里的 `results/baselines/` 是**机器产物目录**。仓库顶层 `baselines/` 是额外
+对比基线的源码/适配目录，两者不要混淆。PLWS 源码仍在 `src/plws/` 与 `scripts/`；
+PUMA 源码仍由 `scripts/bootstrap_puma.sh` 从固定 commit 重建，不在顶层
+`baselines/` 再复制一份。
 
 ## 保存规则
 
@@ -30,6 +38,25 @@ results/
   [`GRADER_ACCURACY.md`](GRADER_ACCURACY.md) 重判，再出表。
 - seed 42 的平铺产物不能代替其他 seed。
 
+## 多机账本
+
+格子产物仍写上面的规范路径。调度账本（`status.json`、`events.jsonl`、attempt
+日志）按机器分开，避免合并时盖住另一台的队列指针。
+
+工位置 `PLWS_MACHINE=<机名>`。未另指定时，账本落在：
+
+```text
+results/runs/machines/<机名>/<队列名>/
+```
+
+`CONTEST_FILL_RUN_ROOT` / `EXTRA_BASELINE_RUN_ROOT` 若自己指定，必须仍在
+`results/runs/machines/<机名>/` 下面，否则拒绝启动。不设 `PLWS_MACHINE`
+时维持本机历史根（`contest_fill`、`extra_baseline_fill` 等）。
+
+拷回本机：已齐格子进规范产物目录；账本整棵放进
+`results/runs/machines/<机名>/`，只覆盖这个机名。不要对拷整棵 `results/runs/`。
+任务谁跑什么不写在这里。
+
 ## 租卡机最小同步集
 
 先在本机按缺格清单确定目标 cell，再只同步这些 cell 的已有前缀：
@@ -40,10 +67,13 @@ results/baselines/puma/<对应目录>/
 results/upstream/dense_trials/dense_G_<model>/<dataset>/seed_<seed>/
 results/runs/plws/window_first/k_4/lexicon_core/<model>/<dataset>/seed_<seed>/
 results/baselines/deer/puma_fullcot_32k_v2/<model>/<dataset>/seed_<seed>/
+results/baselines/answer_convergence/puma_fullcot_32k_v2/<model>/<dataset>/seed_<seed>/
+results/baselines/dynasor/puma_fullcot_32k_v2/<model>/<dataset>/seed_<seed>/
 ```
 
-同步应保留目录层级，并在租卡机运行清单脚本重新扫描。不要把 191 GB 本机
-产物提交到 Git，也不要同步 `results/archive/`。
+后两项只有对应 runner 已实现且 cell 已经生成时才同步。同步应保留目录层级，
+并在租卡机运行清单脚本重新扫描。不要把 191 GB 本机产物提交到 Git，也不要同步
+`results/archive/`。
 
 四个大模型的本机已有产物打在 `transfer/large_model_rental_artifacts_20260916.tar.gz`：
 Full-CoT、PUMA、dense、PLWS jobs/shard；不含 archive、不含小模型、不含 DEER（本机没有）。

@@ -11,6 +11,7 @@ GPU="${GPU:?set GPU}"
 source "$ROOT/scripts/lib/runtime.sh"
 plws_runtime_init
 PUMA_ROOT="$(cd "$PUMA_ROOT" && pwd)"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 MODEL="${MODEL:-$(plws_model_path "$MODEL_TAG")}"
 OUT="${OUT:-$ROOT/results/baselines/deer/puma_fullcot_32k_v2/$MODEL_TAG/$DATASET/seed_$SEED}"
 LIMIT="${LIMIT:-0}"
@@ -73,6 +74,7 @@ fi
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export VLLM_LENS_DISABLE=1
+export DEER_GPU_MEMORY_UTILIZATION="${DEER_GPU_MEMORY_UTILIZATION:-0.90}"
 plws_export_cuda_runtime
 
 tmp="$OUT/.deer.jsonl.$$.part"
@@ -88,7 +90,7 @@ fi
   --dataset "$DATASET" \
   --output_path "$tmp" \
   --seed "$SEED" \
-  --gpu-memory-utilization "${DEER_GPU_MEMORY_UTILIZATION:-0.90}" \
+  --gpu-memory-utilization "$DEER_GPU_MEMORY_UTILIZATION" \
   --max_generated_tokens 32768 \
   --answer_fix_max_tokens 2048 \
   --max-model-len 37888 \
@@ -114,9 +116,11 @@ PY
 mv -f "$tmp" "$RESULT"
 "$PY" - "$RESULT" "$OUT/manifest.json" "$MODEL" "$MODEL_TAG" "$DATASET" "$SEED" "$expected" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 from transformers import GenerationConfig
+from plws.deploy import deployment_manifest
 
 result, manifest_path = map(Path, sys.argv[1:3])
 model, model_tag, dataset = sys.argv[3:6]
@@ -164,6 +168,22 @@ manifest = {
         "top_p": getattr(config, "top_p", 0.95),
         "top_k": top_k,
     },
+    "deployment": deployment_manifest(
+        model_tag,
+        tensor_parallel_size=len(
+            [
+                item
+                for item in os.environ.get(
+                    "CUDA_VISIBLE_DEVICES", ""
+                ).split(",")
+                if item
+            ]
+        )
+        or 1,
+        gpu_memory_utilization=float(
+            os.environ["DEER_GPU_MEMORY_UTILIZATION"]
+        ),
+    ),
     "deer": {
         "family_policy": first["deer_family_policy"],
         "think_ratio": first["think_ratio"],

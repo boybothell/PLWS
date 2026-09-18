@@ -55,6 +55,50 @@ class GradeTest(unittest.TestCase):
             self.assertEqual(error, "")
             self.assertTrue(ok, f"{pred!r} vs {gold!r}")
 
+    def test_must_grade_raises_on_grader_error(self) -> None:
+        self.assertTrue(grading.must_grade("42", "42"))
+        with self.assertRaises(RuntimeError):
+            with patch.object(grading, "grade", return_value=(False, "boom")):
+                grading.must_grade("42", "42")
+
+    def test_baseline_reuse_is_regraded_and_stamped(self) -> None:
+        records = {
+            0: {
+                "question_idx": 0,
+                "answer": r"\dfrac{19}{2}",
+                "correct": False,
+                "original_correct": False,
+            }
+        }
+        samples = [
+            {
+                "ground_truth_answer": "9.5",
+                "model_answer": r"\frac{19}{2}",
+            }
+        ]
+        changed = grading.verify_baseline_records(records, samples, workers=1)
+        self.assertEqual(changed, {0})
+        self.assertTrue(records[0]["correct"])
+        self.assertTrue(records[0]["original_correct"])
+        self.assertEqual(
+            records[0]["grader_verification"],
+            grading.GRADER_VERIFICATION_VERSION,
+        )
+        self.assertEqual(records[0]["grade_error"], "")
+
+    def test_baseline_reuse_blocks_true_to_false(self) -> None:
+        records = {
+            0: {
+                "question_idx": 0,
+                "answer": "41",
+                "correct": True,
+                "original_correct": True,
+            }
+        }
+        samples = [{"ground_truth_answer": "42", "model_answer": "42"}]
+        with self.assertRaisesRegex(RuntimeError, "stored True regraded False"):
+            grading.verify_baseline_records(records, samples, workers=1)
+
 
 class RequireGraderTest(unittest.TestCase):
     def test_selftest_passes_with_a_working_backend(self) -> None:
@@ -273,6 +317,74 @@ class AuditLegacyLeftoverTest(unittest.TestCase):
                 )
             fixed = json.loads(shard.read_text(encoding="utf-8"))
             self.assertEqual(fixed["gt"], "42")
+            self.assertEqual(fixed["gold_error"], "")
+
+    def test_evidence_only_repairs_every_leftover_shard(self) -> None:
+        import audit_grader_flags as audit
+        from plws.paths import PLWSPaths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = PLWSPaths(Path(tmp))
+            stats = paths.puma_statistics_path("r1_7b", "math-500", 42)
+            stats.parent.mkdir(parents=True)
+            stats.write_text(
+                json.dumps(
+                    [
+                        {"question_idx": 0, "ground_truth": "42"},
+                        {"question_idx": 1, "ground_truth": "7"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            score_dir = paths.score_dir(
+                "r1_7b", "math-500", 42, "firstwin", k=4, lexicon="core"
+            )
+            score_dir.mkdir(parents=True)
+            ready = score_dir / "shard_0.jsonl"
+            ready.write_text(
+                json.dumps(
+                    {
+                        "uid": "m:d:s:q0",
+                        "question_idx": 0,
+                        "new_answer": "42",
+                        "new_gold_ok": True,
+                        "gt": "42",
+                        "gold_error": "",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            missing = score_dir / "shard_1.jsonl"
+            missing.write_text(
+                json.dumps(
+                    {
+                        "uid": "m:d:s:q1",
+                        "question_idx": 1,
+                        "new_answer": "7",
+                        "new_gold_ok": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(audit, "job_rows", return_value=[]),
+                patch.object(audit, "grade_many", return_value=[(True, "")]),
+            ):
+                audit.audit_cell(
+                    paths,
+                    "r1_7b",
+                    "math-500",
+                    42,
+                    fix=True,
+                    workers=1,
+                    plws_evidence_only=True,
+                )
+            untouched = json.loads(ready.read_text(encoding="utf-8"))
+            self.assertEqual(untouched["gt"], "42")
+            fixed = json.loads(missing.read_text(encoding="utf-8"))
+            self.assertEqual(fixed["gt"], "7")
             self.assertEqual(fixed["gold_error"], "")
 
 
