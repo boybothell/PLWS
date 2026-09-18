@@ -90,6 +90,17 @@ OFFICIAL_NEW_DATASETS = (
     "hmmt25",
     "amc23",
 )
+# Longest Full-CoT first so four cards drain together. Spill to PUMA /
+# leftover only when this wave cannot fill an idle card.
+FILL_SAMPLE_DATASETS = (
+    "olympiadbench",
+    "math-500",
+    "gpqa-diamond",
+    "amc23",
+    "aime25",
+    "hmmt25",
+)
+PRIORITY_PLWS_MODELS = frozenset({"qwen3_32b", "r1_32b"})
 OFFICIAL_FIRST_SEEDS = (42, 0, 1)
 OFFICIAL_LATER_SEEDS = (123, 7)
 NO_NEW_WORK_DATASETS = ("aime24", "aime26", "brumo25")
@@ -264,6 +275,43 @@ def fill_sort_key(task: ContestTask) -> tuple[int, int, int, int, str]:
         fill_kind_rank(task.kind),
         fill_model_rank(task.model),
         fill_dataset_rank(task.dataset),
+        int(task.seed),
+        task.task_id,
+    )
+
+
+def fill_needs_fullcot_sample(paths: PLWSPaths, task: ContestTask) -> bool:
+    if task.kind != "prereq":
+        return False
+    return not fill_fullcot_complete(paths, task.model, task.dataset, task.seed)[0]
+
+
+def fill_sample_dataset_rank(dataset: str) -> int:
+    try:
+        return FILL_SAMPLE_DATASETS.index(dataset)
+    except ValueError:
+        return len(FILL_SAMPLE_DATASETS) + fill_dataset_rank(dataset)
+
+
+def fill_stage(paths: PLWSPaths, task: ContestTask) -> int:
+    if task.model in PRIORITY_PLWS_MODELS and task.dataset != "olympiadbench":
+        # A ready leftover runs first. Its prereq runs next because PUMA/dense
+        # is what creates the jobs needed to make that leftover ready.
+        return 0 if task.kind == "plws" else 1
+    if fill_needs_fullcot_sample(paths, task):
+        return 2
+    if task.kind == "prereq":
+        return 3
+    return 4
+
+
+def fill_dispatch_sort_key(
+    paths: PLWSPaths, task: ContestTask
+) -> tuple[int, int, int, int, str]:
+    return (
+        fill_stage(paths, task),
+        fill_sample_dataset_rank(task.dataset),
+        fill_model_rank(task.model),
         int(task.seed),
         task.task_id,
     )
@@ -609,27 +657,30 @@ def fill_dispatch(
     *,
     running_gpu_counts: Iterable[int] = (),
     pool_size: int | None = None,
+    running_tasks: Iterable[ContestTask] = (),
 ) -> list[ContestTask]:
-    """Run the 1-GPU and 2-GPU lanes side by side.
+    """Fill idle GPUs longest-sample first, then PUMA, then leftover.
 
-    Leftover PLWS still wins inside the 1-GPU lane. A ready TP=2 job keeps a
-    pair reserved instead of letting 1-GPU work occupy the whole 3-card pool.
-    Concurrent TP=2 lanes cannot exceed pool_size // 2, so a 2-card leftover
-    pool does not invent a second pair.
+    Qwen3/R1 non-Olympiad leftover and the prereqs that unlock it are the
+    explicit top lane. Otherwise keep the four cards on the same wave when
+    that wave can still absorb them: if any live cell is sampling, do not
+    start normal PUMA or leftover on a freed card. Hold a TP=2 pair only when
+    no 1-GPU work can use the odd card.
     """
 
-    ready = [
-        task
-        for task in pending
-        if contest_task_ready(paths, task)
-    ]
-    ones = sorted(
-        (task for task in ready if task.gpu_count == 1),
-        key=fill_sort_key,
+    ready = [task for task in pending if contest_task_ready(paths, task)]
+    sampling_live = any(
+        fill_needs_fullcot_sample(paths, task) for task in running_tasks
     )
-    twos = sorted(
-        (task for task in ready if task.gpu_count >= 2),
-        key=fill_sort_key,
+    stages = tuple(
+        [
+            task
+            for task in ready
+            if fill_stage(paths, task) == stage
+        ]
+        if stage <= 2 or not sampling_live
+        else []
+        for stage in range(5)
     )
     taken: list[ContestTask] = []
     free = free_gpus
@@ -637,20 +688,43 @@ def fill_dispatch(
     max_dual = dual_lane_cap(pool_size)
     can_pair = True if pool_size is None else pool_size >= 2
 
-    if twos and free >= 2 and dual_running < max_dual:
-        taken.append(twos.pop(0))
-        free -= taken[-1].gpu_count
-        dual_running += 1
-    elif twos and dual_running < max_dual and can_pair and free < 2:
-        return []
-
-    while ones and free >= 1:
-        taken.append(ones.pop(0))
-        free -= 1
-    while twos and free >= 2 and dual_running < max_dual:
-        taken.append(twos.pop(0))
-        free -= taken[-1].gpu_count
-        dual_running += 1
+    for stage_idx, pool in enumerate(stages):
+        if free <= 0:
+            break
+        ones = sorted(
+            (task for task in pool if task.gpu_count == 1),
+            key=lambda task: fill_dispatch_sort_key(paths, task),
+        )
+        twos = sorted(
+            (task for task in pool if task.gpu_count >= 2),
+            key=lambda task: fill_dispatch_sort_key(paths, task),
+        )
+        later_ones = [
+            task
+            for later in stages[stage_idx + 1 :]
+            for task in later
+            if task.gpu_count == 1
+        ]
+        if twos and free >= 2 and dual_running < max_dual:
+            taken.append(twos.pop(0))
+            free -= taken[-1].gpu_count
+            dual_running += 1
+        elif (
+            twos
+            and dual_running < max_dual
+            and can_pair
+            and free < 2
+            and not ones
+            and not later_ones
+        ):
+            return taken
+        while ones and free >= 1:
+            taken.append(ones.pop(0))
+            free -= 1
+        while twos and free >= 2 and dual_running < max_dual:
+            taken.append(twos.pop(0))
+            free -= taken[-1].gpu_count
+            dual_running += 1
     return taken
 
 

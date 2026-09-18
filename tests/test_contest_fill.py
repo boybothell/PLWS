@@ -24,6 +24,8 @@ from plws.contest import (
     dual_lane_cap,
     fill_dispatch,
     fill_fullcot_complete,
+    fill_needs_fullcot_sample,
+    fill_sample_dataset_rank,
     fill_legacy_plws_complete,
     fill_needs_prereq,
     fill_task_complete,
@@ -293,7 +295,7 @@ class ContestFillTest(unittest.TestCase):
             [task.task_id for task in taken],
             [
                 "prereq__qwen3_30b_a3b__amc23__s42",
-                "plws__r1_7b__brumo25__s42",
+                "prereq__r1_7b__hmmt25__s0",
             ],
         )
         self.assertEqual(
@@ -346,7 +348,10 @@ class ContestFillTest(unittest.TestCase):
             running_gpu_counts=(1, 1),
             pool_size=3,
         )
-        self.assertEqual(taken, [])
+        self.assertEqual(
+            [task.task_id for task in taken],
+            ["prereq__r1_7b__hmmt25__s0"],
+        )
         taken = fill_dispatch(
             pending,
             1,
@@ -356,7 +361,7 @@ class ContestFillTest(unittest.TestCase):
         )
         self.assertEqual(
             [task.task_id for task in taken],
-            ["plws__r1_7b__brumo25__s42"],
+            ["prereq__r1_7b__hmmt25__s0"],
         )
         singles = [
             plws_task("r1_7b", "brumo25", 42),
@@ -367,10 +372,109 @@ class ContestFillTest(unittest.TestCase):
         self.assertEqual(
             [task.task_id for task in taken],
             [
-                "plws__r1_7b__brumo25__s42",
                 "prereq__r1_7b__hmmt25__s0",
                 "prereq__r1_1p5b__brumo25__s7",
+                "plws__r1_7b__brumo25__s42",
             ],
+        )
+
+    def test_fill_dispatch_keeps_four_cards_on_long_samples(self) -> None:
+        self.assertLess(
+            fill_sample_dataset_rank("olympiadbench"),
+            fill_sample_dataset_rank("math-500"),
+        )
+        self._sample_ready("r1_7b", "math-500", 0)
+        self._write(
+            self.paths.root / "samples/r1_7b/math-500/seed_0/answers.json",
+            [{"question_idx": 0}],
+        )
+        self._puma_ready("r1_7b", "math-500", 0)
+        self._jobs("r1_7b", "math-500", 0)
+        pending = [
+            plws_task("r1_7b", "math-500", 0),
+            prereq_task("r1_7b", "math-500", 0),
+            prereq_task("r1_7b", "olympiadbench", 42),
+            prereq_task("r1_7b", "amc23", 42),
+        ]
+        self.assertTrue(fill_needs_fullcot_sample(self.paths, pending[2]))
+        self.assertFalse(fill_needs_fullcot_sample(self.paths, pending[1]))
+        taken = fill_dispatch(pending, 1, self.paths, pool_size=4)
+        self.assertEqual(
+            [task.task_id for task in taken],
+            ["prereq__r1_7b__olympiadbench__s42"],
+        )
+        taken = fill_dispatch(pending, 4, self.paths, pool_size=4)
+        self.assertEqual(
+            [task.task_id for task in taken],
+            [
+                "prereq__r1_7b__olympiadbench__s42",
+                "prereq__r1_7b__amc23__s42",
+                "prereq__r1_7b__math-500__s0",
+                "plws__r1_7b__math-500__s0",
+            ],
+        )
+        held = fill_dispatch(
+            pending,
+            1,
+            self.paths,
+            pool_size=4,
+            running_tasks=[prereq_task("r1_7b", "olympiadbench", 0)],
+        )
+        self.assertEqual(
+            [task.task_id for task in held],
+            ["prereq__r1_7b__olympiadbench__s42"],
+        )
+        held = fill_dispatch(
+            [pending[0], pending[1]],
+            1,
+            self.paths,
+            pool_size=4,
+            running_tasks=[prereq_task("r1_7b", "olympiadbench", 0)],
+        )
+        self.assertEqual(held, [])
+
+    def test_non_olympiad_32b_plws_and_unlocker_are_top_priority(self) -> None:
+        self._jobs("qwen3_32b", "aime25", 0)
+        pending = [
+            prereq_task("qwq_32b", "olympiadbench", 42),
+            plws_task("qwen3_32b", "aime25", 0),
+            prereq_task("qwen3_32b", "math-500", 42),
+        ]
+        taken = fill_dispatch(
+            pending,
+            2,
+            self.paths,
+            pool_size=4,
+            running_tasks=[prereq_task("qwq_32b", "olympiadbench", 0)],
+        )
+        self.assertEqual(
+            [task.task_id for task in taken],
+            ["plws__qwen3_32b__aime25__s0"],
+        )
+        taken = fill_dispatch(
+            [pending[0], pending[2]],
+            2,
+            self.paths,
+            pool_size=4,
+            running_tasks=[prereq_task("qwq_32b", "olympiadbench", 0)],
+        )
+        self.assertEqual(
+            [task.task_id for task in taken],
+            ["prereq__qwen3_32b__math-500__s42"],
+        )
+        self._jobs("qwen3_32b", "olympiadbench", 42)
+        taken = fill_dispatch(
+            [
+                prereq_task("qwq_32b", "olympiadbench", 42),
+                plws_task("qwen3_32b", "olympiadbench", 42),
+            ],
+            2,
+            self.paths,
+            pool_size=4,
+        )
+        self.assertEqual(
+            [task.task_id for task in taken],
+            ["prereq__qwq_32b__olympiadbench__s42"],
         )
 
     def test_fill_skips_complete_and_published_7b_amc23(self) -> None:
@@ -517,6 +621,15 @@ class ContestFillTest(unittest.TestCase):
         puma = (ROOT / "scripts" / "run_puma_official.sh").read_text()
         self.assertIn("verify_statistics", puma)
         self.assertIn("-m plws.puma_grading", puma)
+        self.assertIn("fullcot_barrier", puma)
+        self.assertIn('rm -f "$FULLCOT_BARRIER"', puma)
+        self.assertIn("release_fullcot_barrier", prereq)
+        self.assertIn("run_puma_official_or_barrier", prereq)
+        self.assertIn("stop_after_fullcot", prereq)
+        self.assertIn("plant_fullcot_barriers", fill)
+        self.assertIn("running_tasks", fill)
+        self.assertIn("--repair-existing-grades", fill)
+        self.assertIn("repair_existing_plws_grades", fill)
         dense = (ROOT / "scripts" / "run_dense_trials_model.sh").read_text()
         self.assertIn(
             'VLLM_GPU_MEMORY_UTILIZATION="${DENSE_VLLM_GPU_MEMORY_UTILIZATION:-0.90}"',

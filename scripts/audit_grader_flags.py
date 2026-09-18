@@ -144,6 +144,40 @@ def write_json(path: Path, payload: Any) -> None:
     tmp.replace(path)
 
 
+def audit_plws_records(
+    label: str,
+    records: list[dict],
+    gold_of,
+    *,
+    fix: bool,
+    workers: int,
+) -> tuple[Finding, bool]:
+    """Re-grade PLWS rows and add the evidence required by the reuse gate."""
+
+    finding, flags_changed = audit_records(
+        label,
+        records,
+        "new_gold_ok",
+        "new_answer",
+        gold_of,
+        workers,
+    )
+    blocked = bool(finding.review or finding.no_gold or finding.errors)
+    if not fix or blocked:
+        return finding, False
+
+    changed = flags_changed
+    for record in records:
+        gold = gold_of(record)
+        if not has_gold(gold):
+            continue
+        old = (record.get("gt"), record.get("gold_error"))
+        record["gt"] = gold
+        record["gold_error"] = ""
+        changed = changed or old != (record["gt"], record["gold_error"])
+    return finding, changed
+
+
 def audit_cell(
     paths: PLWSPaths,
     model: str,
@@ -152,6 +186,7 @@ def audit_cell(
     *,
     fix: bool,
     workers: int,
+    plws_evidence_only: bool = False,
 ) -> list[Finding]:
     findings: list[Finding] = []
     stats_path = paths.puma_statistics_path(model, dataset, seed)
@@ -162,6 +197,7 @@ def audit_cell(
         gold_by_q = {
             int(row["question_idx"]): row.get("ground_truth") for row in rows
         }
+    if stats_path.is_file() and not plws_evidence_only:
         dirty = False
         puma_findings: list[Finding] = []
         for flag, answer_key in PUMA_FLAGS:
@@ -192,6 +228,13 @@ def audit_cell(
     )
     if shard.is_file():
         records = load_jsonl(shard)
+        if plws_evidence_only and all(
+            has_gold(record.get("gt"))
+            and "gold_error" in record
+            and not record.get("gold_error")
+            for record in records
+        ):
+            return findings
         jobs_gold = {
             int(job["question_idx"]): job.get("gt")
             for job in job_rows(paths, model, dataset, seed)
@@ -203,13 +246,12 @@ def audit_cell(
             gold = jobs_gold.get(question)
             return gold if has_gold(gold) else gold_by_q.get(question)
 
-        finding, changed = audit_records(
+        finding, changed = audit_plws_records(
             f"{model} {dataset} s{seed} plws/new_gold_ok",
             records,
-            "new_gold_ok",
-            "new_answer",
             plws_gold,
-            workers,
+            fix=fix,
+            workers=workers,
         )
         findings.append(finding)
         if changed and fix:
@@ -231,6 +273,16 @@ def main() -> None:
         action="store_true",
         help="Promote stored False to True in place, keeping one backup per file.",
     )
+    parser.add_argument(
+        "--plws-evidence-only",
+        action="store_true",
+        help="Skip PUMA and only repair PLWS shards missing reusable grade evidence.",
+    )
+    parser.add_argument(
+        "--exclude-cells",
+        default="",
+        help="Comma-separated model:dataset:seed cells that are currently being written.",
+    )
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument(
         "--quiet", action="store_true", help="Only print cells that need attention."
@@ -242,13 +294,26 @@ def main() -> None:
     models = [item.strip() for item in args.models.split(",") if item.strip()]
     datasets = [item.strip() for item in args.datasets.split(",") if item.strip()]
     seeds = [int(item) for item in args.seeds.split(",") if item.strip()]
+    excluded = {
+        tuple(item.strip().rsplit(":", 2))
+        for item in args.exclude_cells.split(",")
+        if item.strip()
+    }
 
     findings: list[Finding] = []
     for model in models:
         for dataset in datasets:
             for seed in seeds:
+                if (model, dataset, str(seed)) in excluded:
+                    continue
                 for finding in audit_cell(
-                    paths, model, dataset, seed, fix=args.fix, workers=args.workers
+                    paths,
+                    model,
+                    dataset,
+                    seed,
+                    fix=args.fix,
+                    workers=args.workers,
+                    plws_evidence_only=args.plws_evidence_only,
                 ):
                     findings.append(finding)
                     if not args.quiet or not finding.clean:
@@ -264,7 +329,12 @@ def main() -> None:
     for item in stale:
         for error in item.errors[:3]:
             print(f"  ERR {item.label} {error}")
-    if stale and not args.fix:
+    unsafe = [
+        item
+        for item in stale
+        if item.review or item.no_gold or item.errors
+    ]
+    if unsafe or (stale and not args.fix):
         raise SystemExit(1)
 
 

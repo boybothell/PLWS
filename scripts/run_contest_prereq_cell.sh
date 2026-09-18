@@ -143,6 +143,37 @@ fi
 
 echo "[contest-prereq] start $(date -Is) $MODEL_TAG $DATASET seed=$SEED gpu=$GPU $PROTOCOL_ID gen=$MAX_TOKENS"
 
+release_fullcot_barrier() {
+  local marker="${CONTEST_RUN_ROOT:-}/fullcot_barrier/${MODEL_TAG}__${DATASET}__s${SEED}"
+  [[ -n "${CONTEST_RUN_ROOT:-}" && -f "$marker" ]] || return 1
+  rm -f "$marker"
+  echo "[contest-prereq] fullcot barrier released $MODEL_TAG $DATASET seed=$SEED"
+}
+
+stop_after_fullcot() {
+  echo "[contest-prereq] fullcot-only stop $MODEL_TAG $DATASET seed=$SEED"
+  exit 0
+}
+
+run_puma_official_or_barrier() {
+  if release_fullcot_barrier; then
+    stop_after_fullcot
+  fi
+  set +e
+  PLWS_ROOT="$ROOT" MODEL="$MODEL" MODEL_TAG="$MODEL_TAG" \
+    ALIGN_CONF="$ALIGN_CONF" DATASET="$DATASET" SEED="$SEED" GPU="$GPU" \
+    PUMA_DIR="$PUMA_DIR" \
+    bash "$ROOT/scripts/run_puma_official.sh"
+  local code=$?
+  set -e
+  if [[ "$code" -eq 75 ]]; then
+    stop_after_fullcot
+  fi
+  if [[ "$code" -ne 0 ]]; then
+    exit "$code"
+  fi
+}
+
 if [[ "${FULLCOT_ONLY:-0}" == "1" ]]; then
   if ! sample_matches_protocol || [[ ! -f "$SAMPLE/answers.json" ]]; then
     if ! may_sample_fullcot; then
@@ -155,8 +186,7 @@ if [[ "${FULLCOT_ONLY:-0}" == "1" ]]; then
       PROMPT_RESERVE="$PROMPT_RESERVE" MAX_MODEL_LEN="$MAX_MODEL_LEN" \
       bash "$ROOT/scripts/run_puma_aligned_sample.sh"
   fi
-  echo "[contest-prereq] fullcot-only stop $MODEL_TAG $DATASET seed=$SEED"
-  exit 0
+  stop_after_fullcot
 fi
 
 if puma_ready && sample_matches_protocol; then
@@ -164,20 +194,17 @@ if puma_ready && sample_matches_protocol; then
   echo "[contest-prereq] reuse complete PUMA $PUMA_DIR"
 elif [[ -f "$PUMA_DIR/answers.json" ]] && sample_matches_protocol; then
   echo "[contest-prereq] finish incomplete PUMA from existing answers $PUMA_DIR"
-  PLWS_ROOT="$ROOT" MODEL="$MODEL" MODEL_TAG="$MODEL_TAG" \
-    ALIGN_CONF="$ALIGN_CONF" DATASET="$DATASET" SEED="$SEED" GPU="$GPU" \
-    PUMA_DIR="$PUMA_DIR" \
-    bash "$ROOT/scripts/run_puma_official.sh"
+  run_puma_official_or_barrier
 else
   PLWS_ROOT="$ROOT" MODEL="$MODEL" MODEL_TAG="$MODEL_TAG" \
     ALIGN_CONF="$ALIGN_CONF" DATASET="$DATASET" SEED="$SEED" GPU="$GPU" \
     PROTOCOL_ID="$PROTOCOL_ID" MAX_TOKENS="$MAX_TOKENS" ANSWER_FIX="$ANSWER_FIX" \
     PROMPT_RESERVE="$PROMPT_RESERVE" MAX_MODEL_LEN="$MAX_MODEL_LEN" \
     bash "$ROOT/scripts/run_puma_aligned_sample.sh"
-  PLWS_ROOT="$ROOT" MODEL="$MODEL" MODEL_TAG="$MODEL_TAG" \
-    ALIGN_CONF="$ALIGN_CONF" DATASET="$DATASET" SEED="$SEED" GPU="$GPU" \
-    PUMA_DIR="$PUMA_DIR" \
-    bash "$ROOT/scripts/run_puma_official.sh"
+  if release_fullcot_barrier; then
+    stop_after_fullcot
+  fi
+  run_puma_official_or_barrier
 fi
 
 DENSE_GPU_ONLY=1 PLWS_ROOT="$ROOT" MODEL_TAG="$MODEL_TAG" DATASET="$DATASET" \

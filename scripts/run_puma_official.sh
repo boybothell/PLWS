@@ -34,6 +34,20 @@ verify_statistics() {
     --fix
 }
 
+# A queue restart can adopt a Full-CoT sampler that did not start with
+# FULLCOT_ONLY.  A one-shot marker lets that sampler stop at this phase
+# boundary without interrupting generation; the queue then re-launches the
+# cell under its current scheduling policy.  Markers live in the machine-local
+# CONTEST_RUN_ROOT and are consumed exactly once.
+if [[ -n "${CONTEST_RUN_ROOT:-}" ]]; then
+  FULLCOT_BARRIER="$CONTEST_RUN_ROOT/fullcot_barrier/${MODEL_TAG}__${DATASET}__s${SEED}"
+  if [[ -f "$FULLCOT_BARRIER" ]]; then
+    rm -f "$FULLCOT_BARRIER"
+    echo "[puma-official] fullcot barrier released $MODEL_TAG $DATASET seed=$SEED"
+    exit 75
+  fi
+fi
+
 mkdir -p "$PUMA_DIR"
 RUN_FINISHED=0
 write_status() {

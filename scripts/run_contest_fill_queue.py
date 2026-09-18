@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -35,6 +36,7 @@ from plws.contest import (  # noqa: E402
     engine_ready_for_next_cold_start,
     fill_dispatch,
     fill_fullcot_complete,
+    fill_needs_fullcot_sample,
     fill_task_complete,
     filter_fill_tasks,
     fullcot_only_tasks,
@@ -352,6 +354,64 @@ def kick_cpu_exports(
         )
 
 
+def repair_existing_plws_grades(
+    models: tuple[str, ...],
+    datasets: tuple[str, ...],
+    seeds: tuple[int, ...],
+    running: Iterable[Running],
+) -> bool:
+    """Upgrade completed legacy shards before planning GPU regeneration."""
+
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_ROOT / "repair_existing_plws_grades.log"
+    excluded = sorted(
+        {
+            f"{item.task.model}:{item.task.dataset}:{item.task.seed}"
+            for item in running
+        }
+    )
+    command = [
+        PY,
+        str(ROOT / "scripts" / "audit_grader_flags.py"),
+        "--models",
+        ",".join(models),
+        "--datasets",
+        ",".join(datasets),
+        "--seeds",
+        ",".join(str(seed) for seed in seeds),
+        "--workers",
+        "16",
+        "--fix",
+        "--plws-evidence-only",
+    ]
+    if excluded:
+        command.extend(["--exclude-cells", ",".join(excluded)])
+    with log_path.open("ab") as handle:
+        handle.write(f"\n# {now()} repair existing PLWS grades\n".encode())
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "PLWS_ROOT": str(ROOT),
+                "PYTHONPATH": (
+                    f"{ROOT / 'src'}{os.pathsep}"
+                    f"{os.environ.get('PYTHONPATH', '')}"
+                ).rstrip(os.pathsep),
+            },
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    event(
+        "existing_plws_grade_repair",
+        models=list(models),
+        excluded=excluded,
+        code=result.returncode,
+    )
+    return result.returncode == 0
+
+
 def command_for(task: ContestTask) -> list[str]:
     if task.kind == "prereq":
         return ["bash", str(ROOT / "scripts" / "run_contest_prereq_cell.sh")]
@@ -391,6 +451,10 @@ def env_for(task: ContestTask, gpus: tuple[str, ...]) -> dict[str, str]:
         env["DENSE_VLLM_GPU_MEMORY_UTILIZATION"] = env.get(
             "PUMA_VLLM_GPU_MEMORY_UTILIZATION"
         ) or env.get("VLLM_GPU_MEMORY_UTILIZATION", "0.90")
+    # Stop after Full-CoT so the GPU can take another long sample instead of
+    # immediately entering PUMA and leaving the other cards still sampling.
+    if task.kind == "prereq" and fill_needs_fullcot_sample(PATHS, task):
+        env["FULLCOT_ONLY"] = "1"
     return env
 
 
@@ -446,6 +510,26 @@ def adopt_running(tasks: list[ContestTask]) -> dict[int, Running]:
     return adopted
 
 
+def fullcot_barrier_path(task: ContestTask) -> Path:
+    return RUN_ROOT / "fullcot_barrier" / f"{task.model}__{task.dataset}__s{task.seed}"
+
+
+def plant_fullcot_barriers(items: Iterable[Running]) -> None:
+    """Adopted samplers were not started with FULLCOT_ONLY; stop them at PUMA."""
+
+    for item in items:
+        if item.task.kind != "prereq":
+            continue
+        if not fill_needs_fullcot_sample(PATHS, item.task):
+            continue
+        path = fullcot_barrier_path(item.task)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            continue
+        path.write_text("one-shot\n")
+        event("fullcot_barrier_planted", task_id=item.task.task_id)
+
+
 def launch(task: ContestTask, assigned: tuple[str, ...], attempt: int) -> Running:
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     log_path = LOG_ROOT / f"{task.task_id}.attempt_{attempt}.log"
@@ -473,6 +557,22 @@ def launch(task: ContestTask, assigned: tuple[str, ...], attempt: int) -> Runnin
 
 def task_is_done(task: ContestTask) -> tuple[bool, str]:
     return _TASK_IS_DONE(PATHS, task)
+
+
+def reconcile_pending(
+    pending: list[ContestTask],
+    succeeded: list[str],
+) -> None:
+    """Drop tasks completed by CPU repair or another process before dispatch."""
+
+    for task in tuple(pending):
+        complete, reason = task_is_done(task)
+        if not complete:
+            continue
+        pending.remove(task)
+        if task.task_id not in succeeded:
+            succeeded.append(task.task_id)
+        event("task_reconciled", task_id=task.task_id, reason=reason)
 
 
 def write_status(
@@ -587,6 +687,14 @@ def main() -> int:
         action="store_true",
         help="Sample Full-CoT only, skip PUMA/dense/PLWS, then exit.",
     )
+    parser.add_argument(
+        "--repair-existing-grades",
+        default="",
+        help=(
+            "Comma-separated selected models whose legacy PLWS shards should "
+            "be CPU re-graded and marked reusable before GPU planning."
+        ),
+    )
     args = parser.parse_args()
     # A machine whose grader cannot settle LaTeX equivalence writes Acc that is
     # silently too low for every cell it fills. Refuse before taking a GPU.
@@ -605,6 +713,16 @@ def main() -> int:
             raise ValueError(f"unknown fill models: {unknown}")
     else:
         chosen_models = FILL_MODELS
+    repair_models = tuple(
+        item.strip()
+        for item in args.repair_existing_grades.split(",")
+        if item.strip()
+    )
+    invalid_repair = [model for model in repair_models if model not in chosen_models]
+    if invalid_repair:
+        raise ValueError(
+            f"grade-repair models must be selected by --models: {invalid_repair}"
+        )
     chosen_datasets = tuple(
         item.strip() for item in args.datasets.split(",") if item.strip()
     )
@@ -684,6 +802,30 @@ def main() -> int:
         return 0
 
     running = adopt_running(tasks)
+    if repair_models and not args.fullcot_only:
+        repair_existing_plws_grades(
+            repair_models,
+            chosen_datasets,
+            chosen_seeds,
+            running.values(),
+        )
+        tasks = build_fill_tasks(
+            PATHS,
+            models=chosen_models,
+            datasets=chosen_datasets,
+            seeds=chosen_seeds,
+        )
+        if args.task_ids.strip():
+            tasks = filter_fill_tasks(
+                tasks,
+                (
+                    item.strip()
+                    for item in args.task_ids.split(",")
+                    if item.strip()
+                ),
+            )
+        running = adopt_running(tasks)
+    plant_fullcot_barriers(running.values())
     cpu_exports: dict[tuple[str, str, int], subprocess.Popen] = {}
     claimed = {item.task.task_id for item in running.values()}
     pending: list[ContestTask] = []
@@ -736,6 +878,22 @@ def main() -> int:
                 elif stopping:
                     failed.append(item.task.task_id)
                     event("task_failed", task_id=item.task.task_id, reason=reason)
+                elif (
+                    item.task.kind == "prereq"
+                    and fill_fullcot_complete(
+                        PATHS,
+                        item.task.model,
+                        item.task.dataset,
+                        item.task.seed,
+                    )[0]
+                ):
+                    attempts.pop(item.task.task_id, None)
+                    pending.append(item.task)
+                    event(
+                        "task_continue_after_fullcot",
+                        task_id=item.task.task_id,
+                        reason=reason,
+                    )
                 elif attempts.get(item.task.task_id, 1) < args.max_attempts:
                     pending.append(item.task)
                     event(
@@ -756,6 +914,7 @@ def main() -> int:
                 write_status(pending, running, succeeded, failed, phase)
                 return 0
 
+            reconcile_pending(pending, succeeded)
             finished_ids = {task_id: "done" for task_id in succeeded + failed}
             phase = first_open_phase(
                 [*pending, *(item.task for item in running.values())],
@@ -770,12 +929,15 @@ def main() -> int:
                 chosen_models, chosen_datasets, chosen_seeds, cpu_exports
             )
             running_gpu_counts = [item.task.gpu_count for item in running.values()]
+            running_tasks = [item.task for item in running.values()]
+            plant_fullcot_barriers(running.values())
             candidates = fill_dispatch(
                 pending,
                 len(free),
                 PATHS,
                 running_gpu_counts=running_gpu_counts,
                 pool_size=len(gpus),
+                running_tasks=running_tasks,
             )
             waiting = None
             need = max((task.gpu_count for task in pending), default=1)
@@ -799,6 +961,15 @@ def main() -> int:
                     f"holding {len(free)} GPU in pool {','.join(gpus)} "
                     "to pair TP=2 next to the 1-GPU lane"
                 )
+            elif (
+                pending
+                and not candidates
+                and free
+                and any(
+                    fill_needs_fullcot_sample(PATHS, task) for task in running_tasks
+                )
+            ):
+                waiting = "holding idle GPU until live Full-CoT sampling finishes"
             elif pending and not candidates and len(free) < need:
                 waiting = f"only {len(free)} idle GPU in pool {','.join(gpus)}"
             any_loading = bool(still_loading) or foreign_loading
