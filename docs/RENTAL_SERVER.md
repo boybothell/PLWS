@@ -7,15 +7,15 @@ Answer Convergence 与 Dynasor 的计划入口。云仓库只推本 `plws` repo�
 [`BASELINE_ALIGNMENT_AND_CLOUD_RUNBOOK.md`](BASELINE_ALIGNMENT_AND_CLOUD_RUNBOOK.md)；
 本页只保留租卡部署操作。
 
-现行新跑是六集 × 第一波三个 seed：
+现行新跑是五集 × 第一波三个 seed：
 
 ```text
-DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,hmmt25,amc23
+DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,amc23
 SEEDS=42,0,1
 ```
 
-`123` / `7` 等第一波齐了再排。不要新开 `aime24` / `aime26` / `brumo25`。
-仓库里仍钉着九份 jsonl；其中这三份只为续跑已有产物和校验哈希。
+`123` / `7` 等第一波齐了再排。不要新开 `aime24` / `aime26` / `brumo25` / `hmmt25`。
+仓库里仍钉着九份 jsonl；其中这四份只为续跑已有产物和校验哈希。
 当前缺格见
 [`large_model_rental_missing.md`](../tables/firstwin_wait/large_model_rental_missing.md)，
 机器清单见
@@ -47,7 +47,7 @@ uv pip install --python "$PLWS_PY" -r requirements-dev.txt
 # 从固定上游提交创建带 puma-fullcot-32k-v2 补丁的 PUMA，
 # 并把仓库自带的九份评测 jsonl 原样装进 PUMA/data 后校验 SHA256。
 # clone/pull 后数据已经齐全；不要另下 Hugging Face 或同名官方集覆盖。
-# 新队列用现行六集；其余三份只服务已有产物续跑/核验。
+# 新队列用现行五集；其余四份只服务已有产物续跑/核验。
 bash scripts/bootstrap_puma.sh
 ```
 
@@ -138,7 +138,7 @@ bash scripts/preflight_rental_server.sh
 它检查四个模型、PUMA 补丁、关键入口和实际 Python import，并按仓库
 `data/SHA256SUMS` 校验九份锁定数据、`$PUMA_ROOT/data/` 及运行时实际数据路径。
 这会同时锁定内容与题序，不再只检查条数。预检失败时不要启动生成。
-新队列用现行六集。
+新队列用现行五集。
 
 ## 4. 运行一个 cell
 
@@ -186,7 +186,7 @@ PUMA/PLWS 多卡任务复用通用 fill queue，不再为模型或 GPU 编号复
 
 ```bash
 MODELS=qwen3_30b_a3b,r1_32b,qwen3_32b,qwq_32b
-DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,hmmt25,amc23
+DATASETS=math-500,olympiadbench,gpqa-diamond,aime25,amc23
 SEEDS=42,0,1
 
 # 工位必须设 PLWS_MACHINE。账本只写 results/runs/machines/<机名>/，

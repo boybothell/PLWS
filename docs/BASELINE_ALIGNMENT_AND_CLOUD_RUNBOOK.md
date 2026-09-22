@@ -96,10 +96,10 @@ system prompt。
 - `olympiadbench`
 - `gpqa-diamond`
 - `aime25`
-- `hmmt25`
+- `amc23`
 
 先覆盖 seed `42,0,1`；seed `123,7` 属于后续扩展。已有 `aime24`、`aime26`、
-`brumo25`、`amc23` 产物保留，但不因为本文重新开跑。
+`brumo25`、`hmmt25` 产物保留，但不因为本文重新开跑。
 
 ### 3.2 模型集合
 

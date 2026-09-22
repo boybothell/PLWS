@@ -10,7 +10,7 @@
 | 安装固定 PUMA 补丁和九份评测数据 | `bootstrap_puma.sh` |
 | 环境与资产预检 | `preflight_rental_server.sh` |
 | 单个大模型 cell | `run_large_model_cell.sh` |
-| 多卡 PUMA/PLWS fill | `run_contest_fill_queue.py`（租卡必须传现行六集和 `--seeds 42,0,1`） |
+| 多卡 PUMA/PLWS fill | `run_contest_fill_queue.py`（租卡必须传现行五集和 `--seeds 42,0,1`） |
 | 只采 Full-CoT 后停 | 同上，加 `--fullcot-only`（不跑 PUMA / dense / PLWS） |
 | 刷新缺格清单 | `report_large_model_rental_inventory.py`（现行范围报缺；传输核验仍扫历史 180 格） |
 | 核对已落盘判分旗标 | `audit_grader_flags.py`（默认只报；`--fix` 只把 False 升 True） |

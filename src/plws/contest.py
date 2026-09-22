@@ -99,7 +99,6 @@ OFFICIAL_NEW_DATASETS = (
     "olympiadbench",
     "gpqa-diamond",
     "aime25",
-    "hmmt25",
     "amc23",
 )
 # Longest Full-CoT first so four cards drain together. Spill to PUMA /
@@ -110,12 +109,11 @@ FILL_SAMPLE_DATASETS = (
     "gpqa-diamond",
     "amc23",
     "aime25",
-    "hmmt25",
 )
 PRIORITY_PLWS_MODELS = frozenset({"qwen3_32b", "r1_32b"})
 OFFICIAL_FIRST_SEEDS = (42, 0, 1)
 OFFICIAL_LATER_SEEDS = (123, 7)
-NO_NEW_WORK_DATASETS = ("aime24", "aime26", "brumo25")
+NO_NEW_WORK_DATASETS = ("aime24", "aime26", "brumo25", "hmmt25")
 PUBLISHED_LEGACY_PLWS = frozenset(
     ("r1_7b", "amc23", seed) for seed in (42, 0, 1, 123)
 )

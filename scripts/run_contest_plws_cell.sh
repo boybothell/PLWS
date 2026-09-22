@@ -36,10 +36,15 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 plws_export_cuda_runtime
 
 jobs="$ROOT/results/runs/plws/window_first/k_4/lexicon_core/$MODEL_TAG/$DATASET/seed_$SEED/jobs/firstwin.jsonl"
-if [[ ! -f "$jobs" ]]; then
-  echo "ERROR: missing jobs $jobs" >&2
-  exit 1
-fi
+wait_deadline=$((SECONDS + ${PLWS_JOBS_WAIT_SEC:-1800}))
+while [[ ! -f "$jobs" ]]; do
+  if (( SECONDS >= wait_deadline )); then
+    echo "ERROR: missing jobs $jobs" >&2
+    exit 1
+  fi
+  echo "[contest-plws] waiting for jobs $jobs" >&2
+  sleep 5
+done
 
 if pgrep -af "score_leftover_suppress.py --mode suppress --model-tag $MODEL_TAG --dataset $DATASET --seed $SEED" \
   | rg -v "pgrep|$PPID|$$" >/dev/null; then

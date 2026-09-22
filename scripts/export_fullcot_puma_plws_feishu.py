@@ -357,6 +357,122 @@ def write_3seed_xlsx(three_src: Path, five_src: Path, out: Path) -> None:
     print("3seed per-cell pick")
 
 
+MEAN3_SRC = ROOT / "results" / "reports" / "fullcot_puma_plws_mean3.json"
+MEAN3_OUT = ROOT / "tables" / "firstwin_wait" / "fullcot_puma_plws_mean3_feishu.xlsx"
+MEAN3_HEADERS = ["模型", "集", "n", "Full-CoT", "PUMA", "DEER", "窗后压"]
+
+
+def _tr_s(full: dict | None, cell: dict) -> str:
+    if full is None:
+        return "—"
+    full_tok = float(full["tok"])
+    if full_tok <= 0:
+        return "0.0%"
+    return f"{100.0 * (full_tok - float(cell['tok'])) / full_tok:.1f}%"
+
+
+def rich_mean3_cell(cell: dict, full: dict | None, *, kind: str) -> CellRichText:
+    acc = f"{cell['acc']:.2f}%"
+    tok = str(int(round(cell["tok"])))
+    blocks = [
+        TextBlock(BOLD_IF if cell.get("acc_win") else NORM_IF, acc),
+        TextBlock(NORM_IF, " / "),
+        TextBlock(BOLD_IF if cell.get("tok_win") else NORM_IF, tok),
+        TextBlock(NORM_IF, " / "),
+    ]
+    if kind == "full" or full is None:
+        blocks.append(TextBlock(NORM_IF, "—"))
+    else:
+        blocks.append(
+            TextBlock(BOLD_IF if cell.get("tr_win") else NORM_IF, _tr_s(full, cell))
+        )
+    return CellRichText(*blocks)
+
+
+def write_mean3_xlsx(src: Path = MEAN3_SRC, out: Path = MEAN3_OUT) -> None:
+    if Workbook is None:
+        raise SystemExit("openpyxl is required to write the Feishu xlsx")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from report_fullcot_puma_plws_mean3 import (
+        COMPARE,
+        DATASETS,
+        MODELS,
+        OVERALL_EQ,
+        overall_parts,
+    )
+
+    payload = json.loads(src.read_text())
+    by_model: dict[str, list[dict]] = defaultdict(list)
+    for row in payload["cells"]:
+        by_model[row["model"]].append(row)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "mean@3"
+    ws.append(MEAN3_HEADERS)
+    _style_header(ws, MEAN3_HEADERS)
+    widths = [len(header) for header in MEAN3_HEADERS]
+    r = 2
+    for _tag, zh in MODELS:
+        rows = [row for row in by_model.get(zh, [])]
+        by_ds = {row["dataset_id"]: row for row in rows}
+        ordered = [by_ds[ds] for ds, _dszh, _n in DATASETS if ds in by_ds]
+        if not ordered:
+            continue
+        name = NAMES[zh]
+        for row in ordered:
+            values = [name, row["dataset"], row["n"]]
+            shown = [name, row["dataset"], str(row["n"])]
+            for key in COMPARE:
+                cell = row.get(key)
+                if cell is None:
+                    values.append("")
+                    shown.append("未齐")
+                else:
+                    values.append(rich_mean3_cell(cell, row.get("full"), kind=key))
+                    shown.append(
+                        f"{cell['acc']:.2f}% / {int(round(cell['tok']))} / "
+                        f"{'—' if key == 'full' else _tr_s(row.get('full'), cell)}"
+                    )
+            for col, value in enumerate(values, 1):
+                item = ws.cell(r, col, value)
+                item.font = BODY_FONT
+                item.border = THIN
+                item.alignment = LEFT if col <= 2 else CENTER
+                widths[col - 1] = max(widths[col - 1], len(shown[col - 1]))
+            r += 1
+        if len(ordered) == len(DATASETS) and all(
+            all(row["counts"][key] == 3 for key in ("full", "puma", "plws"))
+            for row in ordered
+        ):
+            parts = overall_parts(ordered, weighted=False)
+            values = [name, OVERALL_EQ, "—"]
+            shown = [name, OVERALL_EQ, "—"]
+            for key in COMPARE:
+                cell = parts.get(key)
+                if cell is None:
+                    values.append("")
+                    shown.append("")
+                else:
+                    values.append(rich_mean3_cell(cell, parts.get("full"), kind=key))
+                    shown.append(
+                        f"{cell['acc']:.2f}% / {int(round(cell['tok']))} / "
+                        f"{'—' if key == 'full' else _tr_s(parts.get('full'), cell)}"
+                    )
+            for col, value in enumerate(values, 1):
+                item = ws.cell(r, col, value)
+                item.font = BODY_FONT
+                item.border = THIN
+                item.alignment = LEFT if col <= 2 else CENTER
+                item.fill = OVER_FILL
+                widths[col - 1] = max(widths[col - 1], len(shown[col - 1]))
+            r += 1
+    _autosize(ws, widths, r - 1)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out)
+    print(f"wrote {out}")
+    print(f"rows {r - 1}")
+
+
 def main() -> None:
     write_xlsx(SRC, OUT)
 

@@ -120,13 +120,12 @@ class ContestFillTest(unittest.TestCase):
                 "olympiadbench",
                 "gpqa-diamond",
                 "aime25",
-                "hmmt25",
                 "amc23",
             ),
         )
         self.assertEqual(OFFICIAL_FIRST_SEEDS, (42, 0, 1))
         self.assertEqual(OFFICIAL_LATER_SEEDS, (123, 7))
-        self.assertEqual(NO_NEW_WORK_DATASETS, ("aime24", "aime26", "brumo25"))
+        self.assertEqual(NO_NEW_WORK_DATASETS, ("aime24", "aime26", "brumo25", "hmmt25"))
         self.assertIn("amc23", OFFICIAL_NEW_DATASETS)
         self.assertNotIn("amc23", NO_NEW_WORK_DATASETS)
         tasks = build_fill_tasks(

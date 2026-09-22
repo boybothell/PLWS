@@ -254,26 +254,26 @@ def render(rows: list[dict[str, Any]], generated_at: str) -> str:
             "2. A800-80GB 先对每个 checkpoint 做单题 TP=1 预检：真实导入、"
             "`max_model_len=37888`、32K 生成和写盘都通过后才放全量。若某模型"
             "单卡因 KV 余量不足，只把该模型回退 TP=2，不整队统一 TP=2。",
-            "3. 第一波只领现行六集的 seed 42、0、1。已齐格跳过；"
+            "3. 第一波只领现行五集的 seed 42、0、1。已齐格跳过；"
             "可续 PLWS 优先 R1-32B Olympiad s0 496/560、MATH s1 40/272，"
             "再收 Qwen3-30B 已有 jobs 且落在现行范围内的格子。"
             "这些格子不需要重做 Full-CoT。",
             "4. 第二批补缺 Full-CoT/PUMA，并立即产出 dense、第一扇 k=4 "
             "窗口 jobs；同一格 jobs 一齐就进入 PLWS 动态池。",
-            "5. DEER 是独立方法池，只排现行 72 格。保留各模型族"
+            "5. DEER 是独立方法池，只排现行 60 格。保留各模型族"
             "自己的 think_ratio、置信聚合和退出机制；probe 成本单独记录。",
             "6. 空闲 GPU 动态领下一格；所有模型冷加载整机串行。完整性看"
             "规范产物与 manifest，不看 wrapper 退出码。",
-            "7. seed 123/7 等第一波齐了再开。AIME24 / AIME26 / BRUMO25 "
-            "不入队。",
+            "7. seed 123/7 等第一波齐了再开。AIME24 / AIME26 / BRUMO25 / "
+            "HMMT25 不入队。",
             "",
             "## 本机分工",
             "",
             "- 本机不再启动上述四个模型的 TP=2 任务；已有 R1-32B "
             "Olympiad s0 保留 496/560，MATH s1 保留 40/272，转租卡续。",
             "- 已在飞的 14B Olympiad Full-CoT s7 等落盘，不再新开 seed 7。",
-            "- 本机新开只按现行六集、先三个 seed；AIME24 / AIME26 / "
-            "BRUMO25 不再补。",
+            "- 本机新开只按现行五集、先三个 seed；AIME24 / AIME26 / "
+            "BRUMO25 / HMMT25 不再补。",
             "- 不把租卡上的四个大模型 DEER 混回本机。",
             "",
             "机器可读清单："
