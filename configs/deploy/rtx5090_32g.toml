@@ -1,0 +1,32 @@
+schema_version = 1
+name = "rtx5090_32g"
+# 4x 32GB. Host protocol unchanged. util/max_num_seqs same as local_48g.
+# Large models use TP=4 so four cards have more total VRAM than local TP=2 on 2x48GB.
+# Nemotron stays on the local machine (weights not on this box).
+allowed_models = [
+  "r1_1p5b",
+  "r1_7b",
+  "r1_llama_8b",
+  "r1_14b",
+  "r1_32b",
+  "qwen3_4b",
+  "qwen3_8b",
+  "qwen3_30b_a3b",
+  "qwen3_32b",
+  "qwq_32b",
+]
+gpu_memory_utilization = 0.90
+max_num_seqs = 64
+serialize_cold_load = true
+
+[tensor_parallel]
+r1_1p5b = 1
+r1_7b = 1
+r1_llama_8b = 1
+r1_14b = 1
+r1_32b = 4
+qwen3_4b = 1
+qwen3_8b = 1
+qwen3_30b_a3b = 4
+qwen3_32b = 4
+qwq_32b = 4

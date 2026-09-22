@@ -21,6 +21,16 @@ class DeploymentProfileTests(unittest.TestCase):
         self.assertEqual(profile.tp_for("r1_32b"), 2)
         self.assertEqual(len(profile.allowed_models), 11)
 
+    def test_rtx5090_profile_keeps_util_and_tp4_large(self) -> None:
+        profile = load_deployment_profile("rtx5090_32g", root=ROOT)
+        self.assertEqual(profile.gpu_memory_utilization, 0.90)
+        self.assertEqual(profile.max_num_seqs, 64)
+        self.assertNotIn("nemotron_8b", profile.allowed_models)
+        self.assertEqual(len(profile.allowed_models), 10)
+        self.assertEqual(profile.tp_for("r1_14b"), 1)
+        self.assertEqual(profile.tp_for("qwq_32b"), 4)
+        self.assertEqual(profile.tp_for("qwen3_30b_a3b"), 4)
+
     def test_a800_profile_only_allows_four_large_models(self) -> None:
         profile = load_deployment_profile("a800_80g", root=ROOT)
         self.assertEqual(len(profile.allowed_models), 4)

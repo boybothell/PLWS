@@ -25,8 +25,10 @@ from plws.contest import (
     log_shows_engine_loaded,
     select_cold_starts,
     first_open_phase,
+    claimed_gpu_ids,
     gpu_count,
     idle_contest_gpus,
+    take_gpu_lane,
     is_eight_olympiad_leftover_cmd,
     leftover_gpus_from_proc,
     may_sample_fullcot,
@@ -427,6 +429,22 @@ class ContestPlanTest(unittest.TestCase):
             / "brumo25"
             / "dense_puma"
             / "trial_answers.json",
+        )
+
+    def test_tp2_lane_claims_both_cards(self) -> None:
+        self.assertEqual(claimed_gpu_ids(["6,7", "3"]), {"6", "7", "3"})
+        idle = ["6", "7"]
+        self.assertEqual(take_gpu_lane(idle, 2), "6,7")
+        self.assertEqual(idle, [])
+        self.assertIsNone(take_gpu_lane(["6"], 2))
+        self.assertEqual(
+            idle_contest_gpus(
+                ["6", "7"],
+                claimed=["6,7"],
+                leftover=set(),
+                used_mib={"6": 14, "7": 14},
+            ),
+            [],
         )
 
 

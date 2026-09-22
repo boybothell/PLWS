@@ -853,6 +853,19 @@ def gpu_used_mib() -> dict[str, int]:
     return used
 
 
+def claimed_gpu_ids(assignments: Iterable[str]) -> set[str]:
+    held: set[str] = set()
+    for item in assignments:
+        held.update(part.strip() for part in str(item).split(",") if part.strip())
+    return held
+
+
+def take_gpu_lane(idle: list[str], need: int) -> str | None:
+    if need < 1 or len(idle) < need:
+        return None
+    return ",".join(idle.pop(0) for _ in range(need))
+
+
 def idle_contest_gpus(
     pool: Iterable[str],
     claimed: Iterable[str] = (),
@@ -861,7 +874,7 @@ def idle_contest_gpus(
     leftover: Iterable[str] | None = None,
     used_mib: Mapping[str, int] | None = None,
 ) -> list[str]:
-    blocked = set(claimed)
+    blocked = claimed_gpu_ids(claimed)
     blocked.update(leftover if leftover is not None else leftover_8b_gpus())
     memory = dict(used_mib) if used_mib is not None else gpu_used_mib()
     idle: list[str] = []

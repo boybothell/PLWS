@@ -19,10 +19,13 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from plws.contest import (  # noqa: E402
     MODELS,
+    _proc_environ,
+    claimed_gpu_ids,
     engine_loaded_from_logs,
+    gpu_count,
     idle_contest_gpus,
     leftover_8b_gpus,
-    select_cold_starts,
+    take_gpu_lane,
     vllm_workers_loading,
 )
 from plws.extra_baselines import (  # noqa: E402
@@ -34,6 +37,8 @@ from plws.extra_baselines import (  # noqa: E402
     extra_baseline_output_dir,
     extra_baseline_sample_dir,
     extra_baseline_task_id,
+    extra_cell_method_from_cmd,
+    select_extra_start,
 )
 from plws.grading import require_grader  # noqa: E402
 from plws.host_protocol import validate_fullcot_sample_meta  # noqa: E402
@@ -260,6 +265,38 @@ def validate_tasks(tasks: list[Task]) -> None:
         )
 
 
+def discover_live_extra_cells() -> dict[str, Running]:
+    found: dict[str, Running] = {}
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            raw = (proc / "cmdline").read_bytes()
+        except OSError:
+            continue
+        cmd = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        method = extra_cell_method_from_cmd(cmd)
+        if method is None:
+            continue
+        env = _proc_environ(proc.name)
+        try:
+            task = Task(method, env["MODEL_TAG"], env["DATASET"], int(env["SEED"]))
+        except (KeyError, ValueError):
+            continue
+        gpu = env.get("GPU") or env.get("CUDA_VISIBLE_DEVICES") or ""
+        if not gpu or task.task_id in found:
+            continue
+        found[task.task_id] = Running(
+            task=task,
+            pid=int(proc.name),
+            gpu=gpu,
+            log_path=LOG_ROOT / f"{task.task_id}.attempt_{max(1, existing_attempts(task.task_id))}.log",
+            attempt=max(1, existing_attempts(task.task_id)),
+            started_at=now(),
+        )
+    return found
+
+
 def extra_queue_alive(*, exclude_pid: int | None = None) -> bool:
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
@@ -321,16 +358,27 @@ def main() -> int:
     succeeded: list[str] = []
     failed: list[str] = []
     reconciled: list[str] = []
+    live = discover_live_extra_cells()
+    running: dict[int, Running] = {}
     for task in planned:
         done, reason = task_is_done(task)
         if done:
             succeeded.append(task.task_id)
             reconciled.append(task.task_id)
             event("task_reconciled", task_id=task.task_id, reason=reason)
-        else:
-            pending.append(task)
+            continue
+        adopted = live.get(task.task_id)
+        if adopted is not None:
+            running[adopted.pid] = adopted
+            event(
+                "task_adopted",
+                task_id=task.task_id,
+                gpu=adopted.gpu,
+                pid=adopted.pid,
+            )
+            continue
+        pending.append(task)
 
-    running: dict[int, Running] = {}
     attempts = {task.task_id: existing_attempts(task.task_id) for task in planned}
     run_attempts: dict[str, int] = {}
     stopping = False
@@ -391,7 +439,7 @@ def main() -> int:
                 )
                 return 130
 
-            claimed = {item.gpu for item in running.values()}
+            claimed = claimed_gpu_ids(item.gpu for item in running.values())
             leftover = leftover_8b_gpus()
             idle = idle_contest_gpus(gpus, claimed, leftover=leftover)
             still_loading = [
@@ -411,23 +459,27 @@ def main() -> int:
                 if foreign_loading:
                     names.append("foreign-vllm")
                 waiting = "serial load: waiting for " + ",".join(names)
-            starts = select_cold_starts(pending, any_loading=any_loading)
+            starts = select_extra_start(
+                pending, idle_count=len(idle), any_loading=any_loading
+            )
             launched = 0
             while idle and starts:
                 task = starts.pop(0)
                 if task not in pending:
                     continue
-                gpu = idle.pop(0)
+                lane = take_gpu_lane(idle, gpu_count(task.model_tag))
+                if lane is None:
+                    continue
                 pending.remove(task)
                 attempt = attempts[task.task_id] + 1
                 attempts[task.task_id] = attempt
-                item = launch(task, gpu, attempt)
+                item = launch(task, lane, attempt)
                 running[item.pid] = item
                 launched += 1
                 event(
                     "task_started",
                     task_id=task.task_id,
-                    gpu=gpu,
+                    gpu=lane,
                     pid=item.pid,
                     attempt=attempt,
                 )

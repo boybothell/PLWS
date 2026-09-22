@@ -7,6 +7,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BaselineLayoutTests(unittest.TestCase):
+    def test_extra_cell_cmd_only_matches_wrappers(self) -> None:
+        from plws.extra_baselines import extra_cell_method_from_cmd
+
+        self.assertEqual(
+            extra_cell_method_from_cmd(
+                ["bash", "/repo/scripts/run_answer_convergence_cell.sh"]
+            ),
+            "answer_convergence",
+        )
+        self.assertEqual(
+            extra_cell_method_from_cmd(
+                ["bash", "/repo/baselines/dynasor/run_cell.sh"]
+            ),
+            "dynasor",
+        )
+        self.assertIsNone(
+            extra_cell_method_from_cmd(
+                ["python", "/repo/scripts/run_extra_baseline_queue.py"]
+            )
+        )
     def test_dynasor_has_runner_and_shell_entry(self) -> None:
         directory = ROOT / "baselines" / "dynasor"
         self.assertTrue((directory / "runner.py").is_file())

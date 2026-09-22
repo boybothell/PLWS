@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from plws.contest import MODELS, OFFICIAL_FIRST_SEEDS, OFFICIAL_NEW_DATASETS
+from plws.contest import MODELS, OFFICIAL_FIRST_SEEDS, OFFICIAL_NEW_DATASETS, gpu_count
 from plws.protocol import (
     FULLCOT_GENERATION_TOKENS,
     MAX_MODEL_LEN,
@@ -20,7 +20,6 @@ EXTRA_BASELINE_METHODS = ("answer_convergence", "dynasor")
 EXTRA_BASELINE_DATASETS = (
     "amc23",
     "aime25",
-    "hmmt25",
     "gpqa-diamond",
     "math-500",
     "olympiadbench",
@@ -121,6 +120,15 @@ def extra_baseline_complete(
     )
 
 
+def extra_cell_method_from_cmd(cmd: list[str]) -> str | None:
+    text = " ".join(cmd)
+    if "run_answer_convergence_cell.sh" in text:
+        return "answer_convergence"
+    if "dynasor/run_cell.sh" in text:
+        return "dynasor"
+    return None
+
+
 def extra_baseline_task_id(method: str, model_tag: str, dataset: str, seed: int) -> str:
     prefix = "ansconv" if method == "answer_convergence" else method
     return f"{prefix}__{model_tag}__{dataset}__s{seed}"
@@ -131,16 +139,30 @@ def extra_baseline_sort_key(method: str, model_tag: str, dataset: str, seed: int
         EXTRA_BASELINE_DATASETS.index(dataset)
         if dataset in EXTRA_BASELINE_DATASETS
         else len(EXTRA_BASELINE_DATASETS),
-        EXTRA_BASELINE_MODELS.index(model_tag)
-        if model_tag in EXTRA_BASELINE_MODELS
-        else len(EXTRA_BASELINE_MODELS),
+        -gpu_count(model_tag),
         EXTRA_BASELINE_METHODS.index(method)
         if method in EXTRA_BASELINE_METHODS
         else len(EXTRA_BASELINE_METHODS),
         OFFICIAL_FIRST_SEEDS.index(seed)
         if seed in OFFICIAL_FIRST_SEEDS
         else len(OFFICIAL_FIRST_SEEDS),
+        model_tag,
     )
+
+
+def select_extra_start(pending, *, idle_count: int, any_loading: bool):
+    """Prefer a TP=2 cell when two cards are free; TP=1 only if it can fill the idle set."""
+
+    if any_loading or idle_count < 1:
+        return []
+    if idle_count >= 2:
+        for task in pending:
+            if gpu_count(task.model_tag) >= 2:
+                return [task]
+    for task in pending:
+        if gpu_count(task.model_tag) <= idle_count:
+            return [task]
+    return []
 
 
 def build_extra_baseline_plan(
