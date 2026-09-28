@@ -27,6 +27,18 @@ class ExtraStartTests(unittest.TestCase):
             select_extra_start(pending, idle_count=2, any_loading=True), []
         )
 
+    def test_answer_convergence_before_dynasor(self):
+        pending = [
+            SimpleNamespace(
+                method="dynasor", model_tag="qwq_32b", task_id="dyn-large"
+            ),
+            SimpleNamespace(
+                method="answer_convergence", model_tag="r1_7b", task_id="ac-small"
+            ),
+        ]
+        picked = select_extra_start(pending, idle_count=4, any_loading=False)
+        self.assertEqual([item.task_id for item in picked], ["ac-small"])
+
     def test_sort_puts_tp2_ahead_in_same_dataset(self):
         small = extra_baseline_sort_key("answer_convergence", "r1_7b", "aime25", 42)
         large = extra_baseline_sort_key("answer_convergence", "qwq_32b", "aime25", 42)

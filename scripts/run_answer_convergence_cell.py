@@ -332,6 +332,7 @@ def main() -> int:
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
         enable_prefix_caching=True,
+        enable_flashinfer_autotune=False,
         seed=args.seed,
     )
     atexit.register(shutdown_llm, llm)

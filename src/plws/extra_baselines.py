@@ -151,15 +151,25 @@ def extra_baseline_sort_key(method: str, model_tag: str, dataset: str, seed: int
 
 
 def select_extra_start(pending, *, idle_count: int, any_loading: bool):
-    """Prefer a TP=2 cell when two cards are free; TP=1 only if it can fill the idle set."""
+    """Finish Answer Convergence before Dynasor.
+
+    Inside the chosen method, prefer a TP>=2 cell when at least two cards are
+    free. A TP=1 cell starts only when it fits the idle set.
+    """
 
     if any_loading or idle_count < 1:
         return []
+    answer_convergence = [
+        task
+        for task in pending
+        if getattr(task, "method", "") == "answer_convergence"
+    ]
+    pool = answer_convergence or list(pending)
     if idle_count >= 2:
-        for task in pending:
+        for task in pool:
             if gpu_count(task.model_tag) >= 2:
                 return [task]
-    for task in pending:
+    for task in pool:
         if gpu_count(task.model_tag) <= idle_count:
             return [task]
     return []

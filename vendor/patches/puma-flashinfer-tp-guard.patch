@@ -1,0 +1,114 @@
+diff --git a/puma/flashinfer_guard.py b/puma/flashinfer_guard.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/puma/flashinfer_guard.py
+@@ -0,0 +1,47 @@
++"""Guard FlashInfer MoE autotune under tensor parallel.
++
++vLLM 0.29 writes a shared autotune cache from rank 0. The next TP engine
++in the same cell loads it: rank 0 cache-hits and leaves the tuner, ranks
++1-3 start profiling. That desync hangs (GPU0 100% NCCL spin, GPU1-3 0%).
++PUMA starts two engines per cell (trial answers, then prefixed answers).
++SIGKILL of the NCCL waiter leaves a ghost 100% util on GPU0.
++
++1. Unique cache dir per LLM() so every engine's four ranks miss together.
++2. Honor VLLM_ENABLE_FLASHINFER_AUTOTUNE=0 to skip the tuner entirely.
++"""
++
++from __future__ import annotations
++
++import os
++import time
++from pathlib import Path
++from typing import Any, Callable
++
++
++def _truthy_off(raw: str) -> bool:
++    return raw.lower() in ("0", "false", "no")
++
++
++def isolate_flashinfer_cache() -> str | None:
++    base = os.environ.get("VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR")
++    if not base:
++        return None
++    unique = Path(base) / f"engine_{os.getpid()}_{time.time_ns()}"
++    unique.mkdir(parents=True, exist_ok=True)
++    os.environ["VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR"] = str(unique)
++    return str(unique)
++
++
++def apply_flashinfer_guard(
++    llm_kwargs: dict[str, Any],
++    *,
++    log: Callable[[str], None] | None = None,
++) -> dict[str, Any]:
++    cache = isolate_flashinfer_cache()
++    if cache and log is not None:
++        log(f"FlashInfer autotune cache isolated: {cache}")
++    if _truthy_off(os.environ.get("VLLM_ENABLE_FLASHINFER_AUTOTUNE", "1")):
++        llm_kwargs["enable_flashinfer_autotune"] = False
++        if log is not None:
++            log("enable_flashinfer_autotune=False (env)")
++    return llm_kwargs
+diff --git a/puma/gen_prefixed_answers.py b/puma/gen_prefixed_answers.py
+--- a/puma/gen_prefixed_answers.py
++++ b/puma/gen_prefixed_answers.py
+@@ -8,6 +8,7 @@ from typing import List, Dict
+ from vllm import LLM, SamplingParams
+ from transformers import AutoTokenizer
+ from plws.protocol import (
+     FULLCOT_GENERATION_TOKENS,
+     puma_final_regeneration_tokens,
+ )
++from flashinfer_guard import apply_flashinfer_guard
+ from prompt_utils import (
+     build_base_prompt, get_task_type, get_confident_ending, extract_boxed_answer,
+     extract_code_answer,
+@@ -292,6 +293,7 @@ def process_questions_with_prefixes(
+         logger.info("disable_custom_all_reduce=True (TP>1 or env)")
+     if seed is not None:
+         llm_kwargs["seed"] = seed
++    apply_flashinfer_guard(llm_kwargs, log=logger.info)
+     llm = LLM(**llm_kwargs)
+     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+ 
+diff --git a/puma/gen_trial_answers.py b/puma/gen_trial_answers.py
+--- a/puma/gen_trial_answers.py
++++ b/puma/gen_trial_answers.py
+@@ -10,6 +10,7 @@ from typing import List, Dict
+ 
+ from vllm import LLM, SamplingParams
+ from transformers import AutoTokenizer
++from flashinfer_guard import apply_flashinfer_guard
+ from prompt_utils import build_base_prompt, get_task_type, get_confident_ending, extract_trial_code
+ from vllm_shutdown import shutdown_llm
+ 
+@@ -409,6 +410,7 @@ def process_questions_with_prefixes_vllm(
+         llm_kwargs["logprobs_mode"] = logprobs_mode
+     if seed is not None:
+         llm_kwargs["seed"] = seed
++    apply_flashinfer_guard(llm_kwargs, log=logger.info)
+     llm = LLM(**llm_kwargs)
+     atexit.register(shutdown_llm, llm)
+     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+diff --git a/puma/run_vllm.py b/puma/run_vllm.py
+--- a/puma/run_vllm.py
++++ b/puma/run_vllm.py
+@@ -12,6 +12,7 @@ if _PROJECT_ROOT not in sys.path:
+     sys.path.insert(0, _PROJECT_ROOT)
+ from baselines.utils.math_util import my_answer_extraction
+ from transformers import AutoTokenizer
++from flashinfer_guard import apply_flashinfer_guard
+ from prompt_utils import (
+     get_model_type,
+     get_instruction,
+     get_task_type,
+@@ -241,6 +242,7 @@ def main():
+             f" max_num_batched_tokens={extra_kwargs.get('max_num_batched_tokens', 'default')}"
+         )
+     print(f"gpu_memory_utilization={gpu_mem}{packing}")
++    apply_flashinfer_guard(extra_kwargs, log=print)
+ 
+     if "70B" not in model_name:
+         llm = LLM(

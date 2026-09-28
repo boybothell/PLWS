@@ -22,6 +22,7 @@ sys.path.insert(0, str(PUMA / "puma"))
 
 from transformers import AutoTokenizer, GenerationConfig
 from vllm import LLM, SamplingParams
+from vllm.inputs import TokensPrompt
 
 from math_grader import math_equal
 from plws.deploy import deployment_manifest
@@ -40,6 +41,7 @@ from plws.dynasor import (
     is_certain_answer,
     normalize_gpqa_answer,
     obtain_answer,
+    reusable_probe_state,
     should_early_exit,
     token_chunk_boundaries,
 )
@@ -335,7 +337,7 @@ def main() -> int:
 
     existing_records = load_records(record_dir)
     verify_loaded_records(existing_records, samples, record_dir)
-    if len(existing_records) == len(samples) and final_path.is_file():
+    if len(existing_records) == len(samples):
         ordered = [existing_records[index] for index in range(len(samples))]
         atomic_text(
             final_path,
@@ -373,25 +375,14 @@ def main() -> int:
                 "final_answers": str(final_path),
             },
         )
+        checkpoint_path.unlink(missing_ok=True)
         print(f"[dynasor] already complete n={len(samples)}")
         return 0
 
     print(
-        f"[dynasor] loading {args.model_tag} for "
+        f"[dynasor] preparing {args.model_tag} for "
         f"{args.dataset} seed={args.seed}"
     )
-    llm = LLM(
-        model=args.model,
-        trust_remote_code=True,
-        tensor_parallel_size=tensor_parallel_size,
-        dtype="auto",
-        max_model_len=args.max_model_len,
-        max_num_seqs=args.max_num_seqs,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        enable_prefix_caching=True,
-        seed=args.seed,
-    )
-    atexit.register(shutdown_llm, llm)
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     task_type = get_task_type(args.dataset)
     base_prompts = build_prompts_with_chat_template(
@@ -416,22 +407,45 @@ def main() -> int:
         token_count(tokenizer, str(sample["generated_text"]))
         for sample in samples
     ]
+    def probe_token_ids(index: int, boundary: int) -> list[int]:
+        """Match the string prompts already used by finished cells.
+
+        Slicing reasoning token ids and concatenating them with the suffix is
+        not what vLLM tokenized. Decode the slice, append the official suffix,
+        then encode with special tokens, which is the completed-cell input.
+        On Qwen this stays a prefix of the next boundary apart from the suffix,
+        so one-question scheduling can keep that prefix cached.
+        """
+
+        prefix = tokenizer.decode(
+            reasoning_ids[index][:boundary],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        return tokenizer.encode(
+            base_prompts[index] + prefix + PROBE_SUFFIX,
+            add_special_tokens=True,
+        )
 
     checkpoint: dict[str, Any] = {}
     if checkpoint_path.is_file():
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    next_round = int(checkpoint.get("next_round", 0))
-    states: dict[int, dict[str, Any]] = {
-        int(key): value for key, value in checkpoint.get("states", {}).items()
-    }
-    for index in range(len(samples)):
-        if index not in states and index not in existing_records:
-            states[index] = {
-                "answers": [],
-                "certainties": [],
-                "probe_tokens": 0,
-                "probe_count": 0,
-            }
+    states: dict[int, dict[str, Any]] = {}
+    dropped_questions: list[int] = []
+    for key, value in checkpoint.get("states", {}).items():
+        index = int(key)
+        if index in existing_records or not 0 <= index < len(samples):
+            continue
+        restored = reusable_probe_state(value)
+        if restored is None or len(restored["answers"]) > len(boundaries[index]):
+            dropped_questions.append(index)
+            continue
+        states[index] = restored
+    if dropped_questions:
+        print(
+            "[dynasor] dropped unreusable probe state for questions "
+            + ",".join(str(index) for index in dropped_questions)
+        )
 
     def write_result(
         index: int,
@@ -495,115 +509,181 @@ def main() -> int:
             state=state,
         )
 
-    for index in list(states):
-        if index in existing_records:
-            del states[index]
-        elif not boundaries[index]:
-            write_fullcot(index, states[index])
-            del states[index]
-
-    sampling_params = SamplingParams(
-        temperature=PROBE_TEMPERATURE,
-        max_tokens=args.probe_max_tokens,
-        top_p=PROBE_TOP_P,
-        top_k=PROBE_TOP_K,
-    )
-    max_rounds = max((len(value) for value in boundaries), default=0)
-    start = time.monotonic()
-    for round_index in range(next_round, max_rounds):
-        batch_indices = [
-            index
-            for index in sorted(states)
-            if round_index < len(boundaries[index])
-        ]
-        if not batch_indices:
-            continue
-        prefixes: list[str] = []
-        prompts: list[str] = []
-        for index in batch_indices:
-            boundary = boundaries[index][round_index]
-            prefix = tokenizer.decode(
-                reasoning_ids[index][:boundary],
-                skip_special_tokens=False,
-                clean_up_tokenization_spaces=False,
-            )
-            prompt = base_prompts[index] + prefix + PROBE_SUFFIX
-            context_tokens = token_count(tokenizer, prompt)
-            if context_tokens + args.probe_max_tokens > args.max_model_len:
-                raise RuntimeError(
-                    "Dynasor probe exceeds canonical context: "
-                    f"question={index} boundary={boundary} "
-                    f"context={context_tokens} probe={args.probe_max_tokens} "
-                    f"max={args.max_model_len}"
-                )
-            prefixes.append(prefix)
-            prompts.append(prompt)
-        print(
-            f"[dynasor] round={round_index + 1}/{max_rounds} "
-            f"batch={len(prompts)} completed={len(existing_records)}"
+    def reasoning_prefix(index: int, boundary: int) -> str:
+        return tokenizer.decode(
+            reasoning_ids[index][:boundary],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
         )
-        outputs = llm.generate(prompts, sampling_params)
-        for index, prefix, output in zip(batch_indices, prefixes, outputs):
-            generated = output.outputs[0]
-            probe_text = generated.text
-            answer = obtain_answer(probe_text)
-            if args.dataset == "gpqa-diamond":
-                answer = normalize_gpqa_answer(answer)
-            state = states[index]
-            state["answers"].append(answer)
-            state["certainties"].append(is_certain_answer(probe_text))
-            state["probe_tokens"] = int(state["probe_tokens"]) + len(
-                generated.token_ids
-            )
-            state["probe_count"] = int(state["probe_count"]) + 1
-            boundary = boundaries[index][round_index]
-            early = should_early_exit(
-                state["answers"],
-                state["certainties"],
-                equivalent=lambda left, right: math_equal(left, right),
-                threshold=args.certainty_threshold,
-            )
-            exhausted = round_index == len(boundaries[index]) - 1
-            if early:
-                delivery = (
-                    prefix
-                    + "\n\n... Oh, I have got the answer to the whole problem\n"
-                    "**Final Answer:**\n\\[\n \\boxed{"
-                    + answer
-                    + "}\n\\]"
-                )
-                if token_count(tokenizer, delivery) > FULLCOT_GENERATION_TOKENS:
-                    raise RuntimeError(
-                        "Dynasor early-exit delivery exceeds 32K host budget: "
-                        f"question={index} boundary={boundary}"
-                    )
-                write_result(
-                    index,
-                    answer=answer,
-                    generated_text=delivery,
-                    prefix=prefix,
-                    prefix_tokens=boundary,
-                    stopped_early=True,
-                    stop_boundary=boundary,
-                    state=state,
-                    probe_finish_reason=getattr(
-                        generated, "finish_reason", None
-                    ),
-                    probe_stop_reason=getattr(generated, "stop_reason", None),
-                )
-                del states[index]
-            elif exhausted:
-                write_fullcot(index, state)
-                del states[index]
 
+    def save_checkpoint(active_index: int | None = None) -> None:
         atomic_json(
             checkpoint_path,
             {
                 "updated_at": now(),
-                "next_round": round_index + 1,
+                "scheduler": "question_major",
+                "question_index": active_index,
                 "states": {str(key): value for key, value in states.items()},
             },
         )
+
+    def finish_question(
+        index: int,
+        state: dict[str, Any],
+        *,
+        probe_finish_reason: str | None = None,
+        probe_stop_reason: Any = None,
+    ) -> None:
+        question_boundaries = boundaries[index]
+        if question_boundaries and should_early_exit(
+            state["answers"],
+            state["certainties"],
+            equivalent=lambda left, right: math_equal(left, right),
+            threshold=args.certainty_threshold,
+        ):
+            boundary = question_boundaries[len(state["answers"]) - 1]
+            prefix = reasoning_prefix(index, boundary)
+            answer = str(state["answers"][-1])
+            delivery = (
+                prefix
+                + "\n\n... Oh, I have got the answer to the whole problem\n"
+                "**Final Answer:**\n\\[\n \\boxed{"
+                + answer
+                + "}\n\\]"
+            )
+            if token_count(tokenizer, delivery) > FULLCOT_GENERATION_TOKENS:
+                raise RuntimeError(
+                    "Dynasor early-exit delivery exceeds 32K host budget: "
+                    f"question={index} boundary={boundary}"
+                )
+            write_result(
+                index,
+                answer=answer,
+                generated_text=delivery,
+                prefix=prefix,
+                prefix_tokens=boundary,
+                stopped_early=True,
+                stop_boundary=boundary,
+                state=state,
+                probe_finish_reason=probe_finish_reason,
+                probe_stop_reason=probe_stop_reason,
+            )
+        else:
+            write_fullcot(index, state)
+        states.pop(index, None)
+
+    for index in range(len(samples)):
+        if index in existing_records:
+            states.pop(index, None)
+            continue
+        if not boundaries[index]:
+            write_fullcot(index, states.get(index) or {
+                "answers": [],
+                "certainties": [],
+                "probe_tokens": 0,
+                "probe_count": 0,
+            })
+            states.pop(index, None)
+            continue
+        state = states.get(index)
+        if state is not None and len(state["answers"]) >= len(boundaries[index]):
+            finish_question(index, state)
+
+    if len(existing_records) == len(samples):
+        start = time.monotonic()
+        llm = None
+    else:
+        print(
+            f"[dynasor] loading {args.model_tag}; "
+            "one question at a time so its prefix stays cached"
+        )
+        llm = LLM(
+            model=args.model,
+            trust_remote_code=True,
+            tensor_parallel_size=tensor_parallel_size,
+            dtype="auto",
+            max_model_len=args.max_model_len,
+            max_num_seqs=1,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            enable_prefix_caching=True,
+            enable_flashinfer_autotune=False,
+            seed=args.seed,
+        )
+        atexit.register(shutdown_llm, llm)
+        sampling_params = SamplingParams(
+            temperature=PROBE_TEMPERATURE,
+            max_tokens=args.probe_max_tokens,
+            top_p=PROBE_TOP_P,
+            top_k=PROBE_TOP_K,
+        )
+        start = time.monotonic()
+        for index in range(len(samples)):
+            if index in existing_records:
+                continue
+            state = states.get(index)
+            if state is None:
+                state = {
+                    "answers": [],
+                    "certainties": [],
+                    "probe_tokens": 0,
+                    "probe_count": 0,
+                }
+                states[index] = state
+            question_boundaries = boundaries[index]
+            while len(state["answers"]) < len(question_boundaries):
+                probe_index = len(state["answers"])
+                boundary = question_boundaries[probe_index]
+                prompt_ids = probe_token_ids(index, boundary)
+                if len(prompt_ids) + args.probe_max_tokens > args.max_model_len:
+                    raise RuntimeError(
+                        "Dynasor probe exceeds canonical context: "
+                        f"question={index} boundary={boundary} "
+                        f"context={len(prompt_ids)} probe={args.probe_max_tokens} "
+                        f"max={args.max_model_len}"
+                    )
+                print(
+                    f"[dynasor] question={index + 1}/{len(samples)} "
+                    f"probe={probe_index + 1}/{len(question_boundaries)} "
+                    f"completed={len(existing_records)}"
+                )
+                outputs = llm.generate(
+                    [TokensPrompt(prompt_token_ids=prompt_ids)],
+                    sampling_params,
+                    use_tqdm=False,
+                )
+                if len(outputs) != 1:
+                    raise RuntimeError(
+                        f"Dynasor probed {len(outputs)} questions in one step"
+                    )
+                generated = outputs[0].outputs[0]
+                probe_text = generated.text
+                answer = obtain_answer(probe_text)
+                if args.dataset == "gpqa-diamond":
+                    answer = normalize_gpqa_answer(answer)
+                state["answers"].append(answer)
+                state["certainties"].append(is_certain_answer(probe_text))
+                state["probe_tokens"] = int(state["probe_tokens"]) + len(
+                    generated.token_ids
+                )
+                state["probe_count"] = int(state["probe_count"]) + 1
+                early = should_early_exit(
+                    state["answers"],
+                    state["certainties"],
+                    equivalent=lambda left, right: math_equal(left, right),
+                    threshold=args.certainty_threshold,
+                )
+                if early or probe_index == len(question_boundaries) - 1:
+                    finish_question(
+                        index,
+                        state,
+                        probe_finish_reason=getattr(
+                            generated, "finish_reason", None
+                        ),
+                        probe_stop_reason=getattr(generated, "stop_reason", None),
+                    )
+                    save_checkpoint(index)
+                    break
+                save_checkpoint(index)
 
     records = load_records(record_dir)
     if len(records) != len(samples):
@@ -634,7 +714,8 @@ def main() -> int:
     )
     checkpoint_path.unlink(missing_ok=True)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    shutdown_llm(llm)
+    if llm is not None:
+        shutdown_llm(llm)
     return 0
 
 

@@ -16,6 +16,55 @@ PROBE_SUFFIX = (
 )
 
 
+def probe_prompt_token_ids(
+    base_ids: Sequence[int],
+    reasoning_ids: Sequence[int],
+    boundary: int,
+    suffix_ids: Sequence[int],
+) -> list[int]:
+    """Build one probe as token ids so the next boundary extends this prefix.
+
+    The probe suffix sits after the reasoning prefix. The following boundary
+    therefore shares ``base_ids + reasoning_ids[:boundary]`` and not the suffix.
+    """
+
+    if boundary < 1 or boundary > len(reasoning_ids):
+        raise ValueError(
+            f"boundary must be in 1..{len(reasoning_ids)}, got {boundary}"
+        )
+    return [*base_ids, *reasoning_ids[:boundary], *suffix_ids]
+
+
+def reusable_probe_state(state: object) -> dict[str, object] | None:
+    """Return a saved probe history that can be resumed, or None."""
+
+    if not isinstance(state, dict):
+        return None
+    answers = state.get("answers")
+    certainties = state.get("certainties")
+    if not isinstance(answers, list) or not isinstance(certainties, list):
+        return None
+    if len(answers) != len(certainties):
+        return None
+    if any(not isinstance(answer, str) for answer in answers):
+        return None
+    if any(not isinstance(certain, bool) for certain in certainties):
+        return None
+    try:
+        probe_tokens = int(state.get("probe_tokens", 0))
+        probe_count = int(state.get("probe_count", len(answers)))
+    except (TypeError, ValueError):
+        return None
+    if probe_tokens < 0 or probe_count != len(answers):
+        return None
+    return {
+        "answers": list(answers),
+        "certainties": list(certainties),
+        "probe_tokens": probe_tokens,
+        "probe_count": probe_count,
+    }
+
+
 def token_chunk_boundaries(total_tokens: int, chunk_size: int = CHUNK_SIZE) -> tuple[int, ...]:
     """Return probe boundaries before the frozen trajectory's natural end."""
 
