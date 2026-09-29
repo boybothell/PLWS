@@ -251,6 +251,19 @@ def main() -> None:
         help="core=Wait/Alternatively/Hmm；safe=再加 However/Maybe/another way/double-check/Hold on。",
     )
     parser.add_argument(
+        "--bias-schedule",
+        choices=("front", "back", "count"),
+        default=None,
+        help=(
+            "Post-lock CORE logit schedule. front fades from -peak to 0; "
+            "back grows from 0 to -peak, then becomes -inf. "
+            "count uses -peak * N_post / (N_pre + N_post + 1). "
+            "Requires --out and --isolated-output. Not the main-table ban."
+        ),
+    )
+    parser.add_argument("--bias-horizon", type=int, default=2048)
+    parser.add_argument("--bias-peak", type=float, default=10.0)
+    parser.add_argument(
         "--k",
         type=int,
         default=K,
@@ -359,6 +372,24 @@ def main() -> None:
                 k=args.k,
                 lexicon=args.lexicon,
             )
+    if args.bias_schedule:
+        if not args.isolated_output:
+            parser.error("--bias-schedule requires --isolated-output")
+        if args.bias_peak <= 0 or (
+            args.bias_schedule != "count" and args.bias_horizon <= 0
+        ):
+            parser.error("--bias-peak must be positive; horizon must be positive except for count")
+        canonical = PATHS.score_dir(
+            args.model_tag,
+            datasets[0],
+            seed,
+            kind,
+            k=args.k,
+            lexicon=args.lexicon,
+        ).resolve()
+        resolved_out = args.out.resolve()
+        if resolved_out == canonical or canonical in resolved_out.parents:
+            parser.error("--bias-schedule must not write the canonical score directory")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     read_dirs = {args.out.parent}
     if not args.isolated_output:
@@ -388,18 +419,58 @@ def main() -> None:
                 directory / "scores.jsonl",
             )
         )
+    schedule_fp = ""
+    if args.bias_schedule:
+        from transformers import AutoTokenizer
+
+        from plws.schedule_bias import encode_ban_sequences, sequence_fingerprint
+
+        resume_tokenizer = AutoTokenizer.from_pretrained(
+            MODELS[args.model_tag], trust_remote_code=True
+        )
+        resume_sequences = encode_ban_sequences(
+            usable_bad_words(bad_words, resume_tokenizer),
+            resume_tokenizer,
+        )
+        if not resume_sequences:
+            raise SystemExit("bias schedule has no encodable CORE strings")
+        schedule_fp = sequence_fingerprint(resume_sequences)
+
+    def row_reusable(row: dict) -> bool:
+        if row.get("status") not in {"ok", "too_long"} or not row.get("uid"):
+            return False
+        if row.get("protocol_id") != args.protocol_id:
+            return False
+        if row.get("max_model_len") != args.max_context:
+            return False
+        if int(row.get("truncated_answer_fix_tokens") or 0) != args.answer_tokens:
+            return False
+        if (
+            int(row.get("fullcot_generation_tokens") or args.generation_tokens)
+            != args.generation_tokens
+        ):
+            return False
+        if args.bias_schedule == "count":
+            return (
+                row.get("bias_schedule") == "count"
+                and row.get("bias_formula") == "post_over_pre_plus_one"
+                and float(row.get("bias_peak") or 0) == float(args.bias_peak)
+                and row.get("bias_seq_fp") == schedule_fp
+            )
+        if args.bias_schedule:
+            return (
+                row.get("bias_schedule") == args.bias_schedule
+                and int(row.get("bias_horizon") or 0) == args.bias_horizon
+                and float(row.get("bias_peak") or 0) == float(args.bias_peak)
+                and row.get("bias_seq_fp") == schedule_fp
+            )
+        return not row.get("bias_schedule")
+
     already = {
         str(row["uid"])
         for path in resume_paths
         for row in load_jsonl(path)
-        if row.get("status") in {"ok", "too_long"}
-        and row.get("uid")
-        and row.get("protocol_id") == args.protocol_id
-        and row.get("max_model_len") == args.max_context
-        and int(row.get("truncated_answer_fix_tokens") or 0)
-        == args.answer_tokens
-        and int(row.get("fullcot_generation_tokens") or args.generation_tokens)
-        == args.generation_tokens
+        if row_reusable(row)
     }
     pending = [job for job in jobs if job["uid"] not in already]
     artifact_id = args.out.stem
@@ -430,6 +501,29 @@ def main() -> None:
         "output": str(args.out),
         "created_at": utc_now(),
     }
+    if args.bias_schedule == "count":
+        manifest.update(
+            {
+                "bias_schedule": "count",
+                "bias_formula": "post_over_pre_plus_one",
+                "bias_peak": args.bias_peak,
+                "bias_end": "approaches_neg_peak",
+                "bias_seq_fp": schedule_fp,
+                "comparison": "canonical firstwin core bad_words=-inf",
+                "main_table": False,
+            }
+        )
+    elif args.bias_schedule:
+        manifest.update(
+            {
+                "bias_schedule": args.bias_schedule,
+                "bias_horizon": args.bias_horizon,
+                "bias_peak": args.bias_peak,
+                "bias_end": "zero" if args.bias_schedule == "front" else "neg_inf",
+                "bias_seq_fp": schedule_fp,
+                "main_table": False,
+            }
+        )
     atomic_write_json(manifest_path, manifest)
     status_state = {"finished": False}
 
@@ -512,6 +606,26 @@ def main() -> None:
         f"temperature={temperature} top_p={top_p} top_k={top_k}",
         flush=True,
     )
+    llm_extra: dict[str, Any] = {}
+    ban_seqs: list[list[int]] = []
+    if args.bias_schedule:
+        from plws.schedule_bias import (
+            count_completed_sequences,
+            encode_ban_sequences,
+            sequence_fingerprint,
+        )
+        from plws.schedule_logits import ScheduledCoreBiasLogitsProcessor
+
+        ban_seqs = encode_ban_sequences(bad_words, tokenizer)
+        if sequence_fingerprint(ban_seqs) != schedule_fp:
+            raise SystemExit("CORE token sequences changed between resume and generate")
+        if not ban_seqs:
+            raise SystemExit("bias schedule has no encodable CORE strings")
+        src = str(ROOT_HINT / "src")
+        current_path = os.environ.get("PYTHONPATH", "")
+        if src not in current_path.split(":"):
+            os.environ["PYTHONPATH"] = src + (f":{current_path}" if current_path else "")
+        llm_extra["logits_processors"] = [ScheduledCoreBiasLogitsProcessor]
     llm = LLM(
         model=model_path,
         trust_remote_code=True,
@@ -520,6 +634,7 @@ def main() -> None:
         gpu_memory_utilization=gpu_mem,
         enable_prefix_caching=True,
         **engine_kwargs,
+        **llm_extra,
     )
     atexit.register(shutdown_llm, llm)
     think_base: dict[str, Any] = {
@@ -529,7 +644,7 @@ def main() -> None:
         "stop": ["</think>"],
         "include_stop_str_in_output": False,
     }
-    if args.mode == "suppress":
+    if args.mode == "suppress" and not args.bias_schedule:
         think_base["bad_words"] = bad_words
     answer_base: dict[str, Any] = {
         "temperature": temperature,
@@ -542,10 +657,38 @@ def main() -> None:
     started = time.perf_counter()
     wrote = 0
     step = len(pending) if args.batch_size <= 0 else args.batch_size
+    if args.bias_schedule == "count":
+        ban_note = (
+            f"bias_schedule=count formula=post_over_pre_plus_one "
+            f"peak={args.bias_peak} sequences={len(ban_seqs)}"
+        )
+    elif args.bias_schedule:
+        ban_note = (
+            f"bias_schedule={args.bias_schedule} horizon={args.bias_horizon} "
+            f"peak={args.bias_peak} sequences={len(ban_seqs)}"
+        )
+    else:
+        ban_note = f"bad_words={bad_words if args.mode == 'suppress' else []}"
+    stamp: dict[str, Any] = {}
+    if args.bias_schedule == "count":
+        stamp = {
+            "bias_schedule": "count",
+            "bias_formula": "post_over_pre_plus_one",
+            "bias_peak": args.bias_peak,
+            "bias_end": "approaches_neg_peak",
+            "bias_seq_fp": schedule_fp,
+        }
+    elif args.bias_schedule:
+        stamp = {
+            "bias_schedule": args.bias_schedule,
+            "bias_horizon": args.bias_horizon,
+            "bias_peak": args.bias_peak,
+            "bias_end": "zero" if args.bias_schedule == "front" else "neg_inf",
+            "bias_seq_fp": schedule_fp,
+        }
     print(
         f"{args.mode} shard{args.shard_id} official-batch step={step} "
-        f"pending={len(pending)} lexicon={args.lexicon} "
-        f"bad_words={bad_words if args.mode == 'suppress' else []}",
+        f"pending={len(pending)} lexicon={args.lexicon} {ban_note}",
         flush=True,
     )
     with args.out.open("a") as handle:
@@ -568,6 +711,19 @@ def main() -> None:
                 text = chat + thought
                 n_tok = len(tokenizer.encode(text, add_special_tokens=False))
                 n_left = len(tokenizer.encode(thought, add_special_tokens=False)) if thought else 0
+                if args.bias_schedule == "count":
+                    thought_ids = (
+                        tokenizer.encode(thought, add_special_tokens=False)
+                        if thought
+                        else []
+                    )
+                    job["bias_n_pre"] = count_completed_sequences(
+                        [int(token_id) for token_id in thought_ids],
+                        ban_seqs,
+                    )
+                job_stamp = dict(stamp)
+                if args.bias_schedule == "count":
+                    job_stamp["bias_n_pre"] = int(job["bias_n_pre"])
                 budget = max(0, args.generation_tokens - n_left)
                 budget = min(budget, max(0, args.max_context - n_tok))
                 required_context = n_tok + budget
@@ -597,6 +753,9 @@ def main() -> None:
                                 "first_window_step": job.get("first_window_step"),
                                 "delay_steps": job.get("delay_steps"),
                                 "n_left_tok": n_left,
+                                "n_cont_tok": 0,
+                                "n_think_tok": n_left,
+                                "n_ans_tok": 0,
                                 "protocol_id": args.protocol_id,
                                 "fullcot_generation_tokens": args.generation_tokens,
                                 "truncated_answer_fix_tokens": args.answer_tokens,
@@ -606,6 +765,7 @@ def main() -> None:
                                 "new_gold_ok": False,
                                 "gt": job["gt"],
                                 "gold_error": "",
+                                **job_stamp,
                             }
                         )
                         + "\n"
@@ -616,11 +776,27 @@ def main() -> None:
                     args.sampling_seed, str(job["uid"]), "think"
                 )
                 seed_args = {} if think_seed is None else {"seed": think_seed}
+                schedule_args = {}
+                if args.bias_schedule == "count":
+                    schedule_args["extra_args"] = {
+                        "bias_schedule": "count",
+                        "bias_peak": args.bias_peak,
+                        "bias_n_pre": int(job["bias_n_pre"]),
+                        "bias_token_seqs": ban_seqs,
+                    }
+                elif args.bias_schedule:
+                    schedule_args["extra_args"] = {
+                        "bias_schedule": args.bias_schedule,
+                        "bias_horizon": args.bias_horizon,
+                        "bias_peak": args.bias_peak,
+                        "bias_token_seqs": ban_seqs,
+                    }
                 think_params.append(
                     SamplingParams(
                         **think_base,
                         max_tokens=budget,
                         **seed_args,
+                        **schedule_args,
                     )
                 )
                 ready.append(job)
@@ -675,6 +851,9 @@ def main() -> None:
                     requested_answer_budget,
                     args.max_context - n_closed,
                 )
+                result_stamp = dict(stamp)
+                if args.bias_schedule == "count":
+                    result_stamp["bias_n_pre"] = int(job["bias_n_pre"])
                 if answer_budget < 1:
                     handle.write(
                         json.dumps(
@@ -703,6 +882,8 @@ def main() -> None:
                                 "cont_n": len(cont),
                                 "n_left_tok": n_left,
                                 "n_cont_tok": n_cont_tok,
+                                "n_think_tok": n_left + n_cont_tok,
+                                "n_ans_tok": 0,
                                 "finish_reason": finish,
                                 "hit_cap": hit_cap,
                                 "stop_reason": stop_reason,
@@ -716,6 +897,7 @@ def main() -> None:
                                 "new_gold_ok": False,
                                 "gt": job["gt"],
                                 "gold_error": "",
+                                **result_stamp,
                             }
                         )
                         + "\n"
@@ -834,6 +1016,9 @@ def main() -> None:
                     "generated_text": generated_text,
                     "task_type": task_type,
                 }
+                rec.update(stamp)
+                if args.bias_schedule == "count":
+                    rec["bias_n_pre"] = int(job.get("bias_n_pre") or 0)
                 handle.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 wrote += 1
             handle.flush()

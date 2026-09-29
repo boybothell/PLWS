@@ -51,3 +51,16 @@ docs/log.md
 
 # Working paper memo; current results belong in STATUS/tables, not source docs.
 docs/paper_context_plws.md
+docs/paper_wait_reading.md
+
+# Local lanes. The count-bias method is scripts/run_count_bias_cell.sh.
+scripts/launch_extra_baseline_after_lexicon.sh
+scripts/launch_lexicon_aime25_then_extra.sh
+scripts/plot_k4_why.py
+scripts/report_wait_restart_scatter.py
+scripts/report_wait_span_change.py
+scripts/run_core_why_hold4.sh
+scripts/run_core_why_lane.sh
+scripts/run_k_ablate_amc23_7b.py
+scripts/run_s1_longctx_fill_7b.sh
+scripts/run_schedule_bias_cell.sh
