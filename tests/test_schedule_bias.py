@@ -1,6 +1,7 @@
 from plws.schedule_bias import (
     HORIZON,
     PEAK,
+    IncrementalSequenceCounter,
     continuation_bias,
     count_bias,
     count_completed_sequences,
@@ -36,6 +37,33 @@ def test_completed_core_sequences_count_each_end_position_once() -> None:
     assert count_completed_sequences([1, 3, 4, 5], sequences) == 1
     assert count_completed_sequences([7, 3, 4, 5, 7], sequences) == 3
     assert count_completed_sequences([7, 7], [[7], [7, 7]]) == 2
+
+
+def test_incremental_counter_matches_full_scan_on_append_and_rollback() -> None:
+    sequences = [[7], [3, 4, 5], [9, 5], [7, 7]]
+    counter = IncrementalSequenceCounter(sequences)
+    tokens: list[int] = []
+    for token_id in [7, 3, 4, 5, 7, 7, 2, 9, 5]:
+        tokens.append(token_id)
+        assert counter.update(tokens) == count_completed_sequences(tokens, sequences)
+        # Repeated calls for the same decoding position must not double count.
+        assert counter.update(tokens) == count_completed_sequences(tokens, sequences)
+
+    rolled_back = [7, 3, 4]
+    assert counter.update(rolled_back) == count_completed_sequences(
+        rolled_back, sequences
+    )
+    changed_branch = [7, 3, 4, 5, 9, 5]
+    assert counter.update(changed_branch) == count_completed_sequences(
+        changed_branch, sequences
+    )
+
+
+def test_incremental_counter_handles_multi_token_jump() -> None:
+    sequences = [[7], [3, 4, 5]]
+    counter = IncrementalSequenceCounter(sequences)
+    tokens = [7, 3, 4, 5, 7]
+    assert counter.update(tokens) == 3
 
 
 def test_penalized_ids_fire_once_and_only_on_a_matched_prefix() -> None:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
+from collections.abc import Sequence
 
 HORIZON = 2048
 PEAK = 10.0
@@ -56,6 +58,56 @@ def count_completed_sequences(
             if token_ids[start : start + width] == sequence:
                 ends.add(start + width - 1)
     return len(ends)
+
+
+class IncrementalSequenceCounter:
+    """Count completed sequences without rescanning the whole continuation.
+
+    Normal decoding only appends tokens. Each update therefore examines the
+    newly appended end positions, making a full generation linear in its
+    length. A rollback or changed suffix resets the counter and rescans once,
+    which keeps the result correct for a non-append-only caller.
+    """
+
+    def __init__(self, sequences: list[list[int]]) -> None:
+        by_last: dict[int, list[tuple[int, ...]]] = defaultdict(list)
+        seen: set[tuple[int, ...]] = set()
+        for sequence in sequences:
+            key = tuple(sequence)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            by_last[key[-1]].append(key)
+        self._by_last = dict(by_last)
+        self._tail_size = max((len(sequence) for sequence in seen), default=1)
+        self._processed = 0
+        self._count = 0
+        self._tail: tuple[int, ...] = ()
+
+    def update(self, token_ids: Sequence[int]) -> int:
+        size = len(token_ids)
+        overlap_start = max(0, self._processed - self._tail_size)
+        old_tail = tuple(token_ids[overlap_start : self._processed])
+        append_only = size >= self._processed and old_tail == self._tail
+        if not append_only:
+            self._processed = 0
+            self._count = 0
+
+        for end in range(self._processed, size):
+            candidates = self._by_last.get(int(token_ids[end]), ())
+            for sequence in candidates:
+                width = len(sequence)
+                if width <= end + 1 and tuple(
+                    token_ids[end + 1 - width : end + 1]
+                ) == sequence:
+                    # Match count is per end position, not per surface form.
+                    self._count += 1
+                    break
+
+        self._processed = size
+        tail_start = max(0, size - self._tail_size)
+        self._tail = tuple(token_ids[tail_start:size])
+        return self._count
 
 
 def continuation_bias(

@@ -6,9 +6,9 @@ from vllm import SamplingParams
 from vllm.v1.sample.logits_processor import AdapterLogitsProcessor
 
 from plws.schedule_bias import (
+    IncrementalSequenceCounter,
     continuation_bias,
     count_bias,
-    count_completed_sequences,
     penalized_token_ids,
 )
 
@@ -58,15 +58,12 @@ class ScheduledCoreBiasLogitsProcessor(AdapterLogitsProcessor):
         sequences = extra["bias_token_seqs"]
         if schedule == "count":
             n_pre = int(extra["bias_n_pre"])
+            counter = IncrementalSequenceCounter(sequences)
 
             def processor(past_tokens_ids, logits):
                 # past_tokens_ids is the continuation only. The lock prefix
                 # is already in the prompt, so its count arrives as n_pre.
-                bias = count_bias(
-                    count_completed_sequences(list(past_tokens_ids), sequences),
-                    n_pre,
-                    peak,
-                )
+                bias = count_bias(counter.update(past_tokens_ids), n_pre, peak)
                 if bias == 0.0:
                     return logits
                 token_ids = penalized_token_ids(list(past_tokens_ids), sequences)
