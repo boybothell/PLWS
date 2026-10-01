@@ -19,12 +19,17 @@ AIME24、AIME26、BRUMO25、AMC23 仍钉在仓库里，只服务已有产物续�
 | `brumo25_test.jsonl` | 30 | `MathArena/brumo_2025` |
 | `amc23_test.jsonl` | 40 | 本机 DEER `amc/test.jsonl` 转写 |
 
+`gpqa-diamond-official_test.jsonl` 只给 1.5B 和 Llama-8B 的动态 Answer Convergence 用。
+它来自 ModelScope `modelscope/gpqa` 的 `gpqa_diamond.csv`，按官方
+`baselines/answer_only.py` 在 seed 42 下 `random.sample` 排好四个选项，金标是打乱后的字母。
+字母次数是 A 50、B 57、C 48、D 43。它不替换 `gpqa-diamond_test.jsonl`，也不进主表。
+
 `scripts/bootstrap_puma.sh` 会把仓库 `data/` 原样安装到
 `$PUMA_ROOT/data/`，随后使用 `SHA256SUMS` 逐文件校验；重复执行会恢复被改动
 或覆盖的数据。`$PUMA_ROOT/data/` 是运行副本，不是另一个数据来源。
 
 正式续跑不要设置 `PLWS_DATA_ROOT`，让运行时默认读取 `$PUMA_ROOT/data/`。
-如确需覆盖该变量，目录内九份文件必须与本目录逐字节一致，预检会按 SHA256
+如确需覆盖该变量，目录内 `SHA256SUMS` 列出的文件必须与本目录逐字节一致，预检会按 SHA256
 拒绝不一致的内容。
 
 续跑依赖 `question_idx`。换一份同条数但内容、LaTeX 或顺序不同的数据，会让
