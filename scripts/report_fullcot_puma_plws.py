@@ -243,13 +243,17 @@ def load_trials_by_question(path: Path) -> dict[int, list[dict]]:
     return out
 
 
-def boxed_trial_tokens_upto(trials: list[dict], end_step: int) -> float:
-    """Sum boxed-interior trial tokens through the first-window end step."""
+def boxed_trial_tokens_upto(trials: list[dict], end_step: int | None) -> float:
+    """Sum boxed-interior trial tokens through end_step.
+
+    end_step=None keeps every step on the trajectory. The live mean@3 table
+    still passes a window end and records zero for questions with no window.
+    """
     total = 0
     for row in trials:
         if row.get("skipped"):
             continue
-        if int(row["stopped_len"]) > int(end_step):
+        if end_step is not None and int(row["stopped_len"]) > int(end_step):
             continue
         if not str(row.get("final_answer") or ""):
             continue
@@ -823,6 +827,10 @@ def score_model_dataset(
                     )
                 )
             elif int(question_idx) not in windowed:
+                # 2026-10-02：无窗题从第 1 步试到最后一步，这些 boxed
+                # count_answer_tokens 是实际消耗。现行主表仍记 0，因为
+                # 摊到整集只有几个到大约 20 token。下次重算主表时要加进去，
+                # 用 boxed_trial_tokens_upto(trials, end_step=None)，不要改 Acc。
                 plws.append(
                     (
                         bool(info.get("original_correct")),

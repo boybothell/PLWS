@@ -84,6 +84,7 @@ class ReportFullcotPumaPlwsTest(unittest.TestCase):
             },
         ]
         self.assertEqual(boxed_trial_tokens_upto(trials, 10), 7)
+        self.assertEqual(boxed_trial_tokens_upto(trials, None), 16)
 
     def test_puma_token_adds_boxed_trial(self) -> None:
         self.assertEqual(

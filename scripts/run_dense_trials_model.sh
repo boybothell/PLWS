@@ -199,6 +199,7 @@ for i in $(seq 0 $((N - 1))); do
       --prompt-version "${PROMPT_VERSION:-default}" \
       --seed "${SEED:-42}" \
       --respect-embedding-filter \
+      --stop-at-matching-brace \
       "${trial_extra_args[@]}" \
       2>&1 | tee "$logf"
   ) &

@@ -257,12 +257,18 @@ def main() -> None:
         help=(
             "Post-lock CORE logit schedule. front fades from -peak to 0; "
             "back grows from 0 to -peak, then becomes -inf. "
-            "count uses -peak * N_post / (N_pre + N_post + 1). "
+            "count uses -peak * (1 - rho**n) on the same tokens as bad_words. "
             "Requires --out and --isolated-output. Not the main-table ban."
         ),
     )
     parser.add_argument("--bias-horizon", type=int, default=2048)
     parser.add_argument("--bias-peak", type=float, default=10.0)
+    parser.add_argument(
+        "--bias-rho",
+        type=float,
+        default=None,
+        help="Base of the count schedule. Required when --bias-schedule=count.",
+    )
     parser.add_argument(
         "--k",
         type=int,
@@ -379,6 +385,10 @@ def main() -> None:
             args.bias_schedule != "count" and args.bias_horizon <= 0
         ):
             parser.error("--bias-peak must be positive; horizon must be positive except for count")
+        if args.bias_schedule == "count" and not (
+            args.bias_rho is not None and 0 < args.bias_rho < 1
+        ):
+            parser.error("--bias-schedule=count requires --bias-rho in (0, 1)")
         canonical = PATHS.score_dir(
             args.model_tag,
             datasets[0],
@@ -453,8 +463,9 @@ def main() -> None:
         if args.bias_schedule == "count":
             return (
                 row.get("bias_schedule") == "count"
-                and row.get("bias_formula") == "post_over_pre_plus_one"
+                and row.get("bias_formula") == "one_minus_rho_pow_n"
                 and float(row.get("bias_peak") or 0) == float(args.bias_peak)
+                and float(row.get("bias_rho") or -1) == float(args.bias_rho)
                 and row.get("bias_seq_fp") == schedule_fp
             )
         if args.bias_schedule:
@@ -505,8 +516,9 @@ def main() -> None:
         manifest.update(
             {
                 "bias_schedule": "count",
-                "bias_formula": "post_over_pre_plus_one",
+                "bias_formula": "one_minus_rho_pow_n",
                 "bias_peak": args.bias_peak,
+                "bias_rho": args.bias_rho,
                 "bias_end": "approaches_neg_peak",
                 "bias_seq_fp": schedule_fp,
                 "comparison": "canonical firstwin core bad_words=-inf",
@@ -610,7 +622,6 @@ def main() -> None:
     ban_seqs: list[list[int]] = []
     if args.bias_schedule:
         from plws.schedule_bias import (
-            count_completed_sequences,
             encode_ban_sequences,
             sequence_fingerprint,
         )
@@ -659,8 +670,8 @@ def main() -> None:
     step = len(pending) if args.batch_size <= 0 else args.batch_size
     if args.bias_schedule == "count":
         ban_note = (
-            f"bias_schedule=count formula=post_over_pre_plus_one "
-            f"peak={args.bias_peak} sequences={len(ban_seqs)}"
+            f"bias_schedule=count formula=one_minus_rho_pow_n "
+            f"peak={args.bias_peak} rho={args.bias_rho} sequences={len(ban_seqs)}"
         )
     elif args.bias_schedule:
         ban_note = (
@@ -673,8 +684,9 @@ def main() -> None:
     if args.bias_schedule == "count":
         stamp = {
             "bias_schedule": "count",
-            "bias_formula": "post_over_pre_plus_one",
+            "bias_formula": "one_minus_rho_pow_n",
             "bias_peak": args.bias_peak,
+            "bias_rho": args.bias_rho,
             "bias_end": "approaches_neg_peak",
             "bias_seq_fp": schedule_fp,
         }
@@ -711,19 +723,7 @@ def main() -> None:
                 text = chat + thought
                 n_tok = len(tokenizer.encode(text, add_special_tokens=False))
                 n_left = len(tokenizer.encode(thought, add_special_tokens=False)) if thought else 0
-                if args.bias_schedule == "count":
-                    thought_ids = (
-                        tokenizer.encode(thought, add_special_tokens=False)
-                        if thought
-                        else []
-                    )
-                    job["bias_n_pre"] = count_completed_sequences(
-                        [int(token_id) for token_id in thought_ids],
-                        ban_seqs,
-                    )
                 job_stamp = dict(stamp)
-                if args.bias_schedule == "count":
-                    job_stamp["bias_n_pre"] = int(job["bias_n_pre"])
                 budget = max(0, args.generation_tokens - n_left)
                 budget = min(budget, max(0, args.max_context - n_tok))
                 required_context = n_tok + budget
@@ -781,7 +781,7 @@ def main() -> None:
                     schedule_args["extra_args"] = {
                         "bias_schedule": "count",
                         "bias_peak": args.bias_peak,
-                        "bias_n_pre": int(job["bias_n_pre"]),
+                        "bias_rho": args.bias_rho,
                         "bias_token_seqs": ban_seqs,
                     }
                 elif args.bias_schedule:
@@ -852,8 +852,6 @@ def main() -> None:
                     args.max_context - n_closed,
                 )
                 result_stamp = dict(stamp)
-                if args.bias_schedule == "count":
-                    result_stamp["bias_n_pre"] = int(job["bias_n_pre"])
                 if answer_budget < 1:
                     handle.write(
                         json.dumps(
@@ -1017,8 +1015,6 @@ def main() -> None:
                     "task_type": task_type,
                 }
                 rec.update(stamp)
-                if args.bias_schedule == "count":
-                    rec["bias_n_pre"] = int(job.get("bias_n_pre") or 0)
                 handle.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 wrote += 1
             handle.flush()

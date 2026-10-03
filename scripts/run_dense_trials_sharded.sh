@@ -94,6 +94,7 @@ for i in "${!GPU_ARR[@]}"; do
       --confidence-aggregation geometric \
       --prompt-version "${PROMPT_VERSION:-default}" \
       --seed "${SEED:-42}" \
+      --stop-at-matching-brace \
       2>&1 | tee "$logf"
   ) &
   pids+=($!)

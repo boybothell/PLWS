@@ -16,25 +16,23 @@ HORIZON = 2048
 PEAK = 10.0
 
 
-def count_bias(n_post: int, n_pre: int, peak: float = PEAK) -> float:
-    """Logit bias from post-lock CORE count normalized by the same trace.
+def count_bias(n: int, rho: float, peak: float = PEAK) -> float:
+    """Logit bias after ``n`` CORE sequences have already been completed.
 
-    ``n_pre`` is the number of CORE markers completed in the lock prefix.
-    ``n_post`` is the number completed in the continuation before the token
-    now being sampled. The first post-lock marker sees ``n_post == 0`` and
-    gets no bias. The bias is ``-peak / 2`` when ``n_post == n_pre + 1``,
-    and it approaches ``-peak`` as the continuation keeps repeating CORE.
+    ``b(n) = -peak * (1 - rho**n)``. ``n`` counts sequences completed in the
+    post-lock continuation before the token now being sampled. ``n == 0``
+    leaves logits unchanged. Larger ``n`` moves the bias toward ``-peak``.
     """
 
-    if n_post < 0:
-        raise ValueError(f"post-lock count must be >= 0, got {n_post}")
-    if n_pre < 0:
-        raise ValueError(f"pre-lock count must be >= 0, got {n_pre}")
-    if peak <= 0:
-        raise ValueError(f"peak must be positive, got {peak}")
-    if n_post == 0:
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise ValueError(f"post-lock count must be an int >= 0, got {n!r}")
+    if isinstance(rho, bool) or not isinstance(rho, (int, float)) or not 0 < float(rho) < 1:
+        raise ValueError(f"rho must be in (0, 1), got {rho!r}")
+    if isinstance(peak, bool) or not isinstance(peak, (int, float)) or peak <= 0:
+        raise ValueError(f"peak must be positive, got {peak!r}")
+    if n == 0:
         return 0.0
-    return -float(peak) * n_post / (n_pre + n_post + 1)
+    return -float(peak) * (1.0 - float(rho) ** n)
 
 
 def count_completed_sequences(
@@ -42,9 +40,7 @@ def count_completed_sequences(
 ) -> int:
     """How many token positions complete at least one CORE sequence.
 
-    A position counts once even when several sequences end there. This is
-    the same matcher used for both the lock prefix and the continuation, so
-    the ratio does not mix string counts with token counts.
+    A position counts once even when several sequences end there.
     """
 
     ends: set[int] = set()

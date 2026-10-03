@@ -4,14 +4,14 @@
 # The comparison arm is the existing firstwin CORE ban: after the lock,
 # every CORE token has logit -inf. This script does not regenerate it.
 #
-#   N_pre  = CORE sequences completed in the lock prefix
-#   N_post = CORE sequences completed in the continuation so far
-#   beta   = -PEAK * N_post / (N_pre + N_post + 1)
+#   n    = CORE sequences already completed in the post-lock continuation
+#   beta = -PEAK * (1 - RHO^n)
 #
-# beta is added only to a token that would complete a CORE sequence.
-# The first post-lock CORE token sees N_post = 0 and is not penalized.
+# beta is added at the same place as vLLM bad_words: the token that would
+# finish a CORE sequence once its prefix is already the suffix. n does not
+# include the token being sampled. The first post-lock CORE sees n = 0.
 #
-#   GPU=4 DATASET=math-500 SEED=42 \
+#   GPU=4 DATASET=math-500 SEED=42 RHO=0.95 \
 #     bash scripts/run_count_bias_cell.sh
 set -euo pipefail
 
@@ -21,8 +21,11 @@ DATASET="${DATASET:?set DATASET}"
 SEED="${SEED:?set SEED}"
 GPU="${GPU:?set GPU}"
 PEAK="${PEAK:-10}"
+RHO="${RHO:?set RHO in (0, 1)}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 LIMIT="${LIMIT:-0}"
+SHARD_ID="${SHARD_ID:-0}"
+NUM_SHARDS="${NUM_SHARDS:-1}"
 
 # shellcheck source=lib/runtime.sh
 source "$ROOT/scripts/lib/runtime.sh"
@@ -48,7 +51,8 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 plws_export_cuda_runtime
 
 jobs="$ROOT/results/runs/plws/window_first/k_4/lexicon_core/$MODEL_TAG/$DATASET/seed_$SEED/jobs/firstwin.jsonl"
-out="${OUT:-$ROOT/results/runs/plws/count_bias/$MODEL_TAG/$DATASET/seed_$SEED/shard_0.jsonl}"
+rho_tag="rho_${RHO//./p}"
+out="${OUT:-$ROOT/results/runs/plws/count_bias/$rho_tag/$MODEL_TAG/$DATASET/seed_$SEED/shard_${SHARD_ID}.jsonl}"
 limit_args=()
 if [[ "$LIMIT" != "0" ]]; then
   limit_args=(--limit "$LIMIT")
@@ -58,7 +62,7 @@ if [[ ! -f "$jobs" ]]; then
   exit 1
 fi
 
-echo "start gpus=$GPU schedule=count $MODEL_TAG $DATASET seed=$SEED peak=$PEAK limit=$LIMIT $(date -Is)"
+echo "start gpus=$GPU schedule=count $MODEL_TAG $DATASET seed=$SEED peak=$PEAK rho=$RHO shard=$SHARD_ID/$NUM_SHARDS limit=$LIMIT $(date -Is)"
 "$PY" "$ROOT/scripts/score_leftover_suppress.py" \
   --mode suppress \
   --model-tag "$MODEL_TAG" \
@@ -78,8 +82,9 @@ echo "start gpus=$GPU schedule=count $MODEL_TAG $DATASET seed=$SEED peak=$PEAK l
   --isolated-output \
   --bias-schedule count \
   --bias-peak "$PEAK" \
+  --bias-rho "$RHO" \
   "${limit_args[@]}" \
   --out "$out" \
-  --shard-id 0 \
-  --num-shards 1
+  --shard-id "$SHARD_ID" \
+  --num-shards "$NUM_SHARDS"
 echo "done gpus=$GPU schedule=count $MODEL_TAG $DATASET seed=$SEED $(date -Is)"

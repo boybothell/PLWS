@@ -32,9 +32,9 @@ class ScheduledCoreBiasLogitsProcessor(AdapterLogitsProcessor):
         ):
             raise ValueError(f"bias_horizon must be a positive int, got {horizon!r}")
         if schedule == "count":
-            n_pre = extra.get("bias_n_pre")
-            if isinstance(n_pre, bool) or not isinstance(n_pre, int) or n_pre < 0:
-                raise ValueError(f"bias_n_pre must be an int >= 0, got {n_pre!r}")
+            rho = extra.get("bias_rho")
+            if isinstance(rho, bool) or not isinstance(rho, (int, float)) or not 0 < float(rho) < 1:
+                raise ValueError(f"bias_rho must be in (0, 1), got {rho!r}")
         if isinstance(peak, bool) or not isinstance(peak, (int, float)) or peak <= 0:
             raise ValueError(f"bias_peak must be a positive number, got {peak!r}")
         if not isinstance(sequences, list) or not sequences:
@@ -57,13 +57,14 @@ class ScheduledCoreBiasLogitsProcessor(AdapterLogitsProcessor):
         peak = float(extra["bias_peak"])
         sequences = extra["bias_token_seqs"]
         if schedule == "count":
-            n_pre = int(extra["bias_n_pre"])
+            rho = float(extra["bias_rho"])
             counter = IncrementalSequenceCounter(sequences)
 
             def processor(past_tokens_ids, logits):
-                # past_tokens_ids is the continuation only. The lock prefix
-                # is already in the prompt, so its count arrives as n_pre.
-                bias = count_bias(counter.update(past_tokens_ids), n_pre, peak)
+                # Same place as vLLM bad_words: only the token that would
+                # finish a CORE sequence, and only when its prefix is already
+                # the suffix. n does not include the token being sampled.
+                bias = count_bias(counter.update(past_tokens_ids), rho, peak)
                 if bias == 0.0:
                     return logits
                 token_ids = penalized_token_ids(list(past_tokens_ids), sequences)

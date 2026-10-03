@@ -430,6 +430,7 @@ baselines/dynasor/runner.py
 - `k=4`
 - lexicon：`core`
 - 锁点：每步试答出现第一扇连续 4 步同答窗，使用窗末前缀
+- 新生成的 PLWS dense 试答传 `--stop-at-matching-brace`：一次只生成 1 个 token，停在和外层左花括号配对的右花括号，右花括号留在输出里，上限仍是 30。代码任务不走这条。PUMA 正式管线不传这个开关。已经落盘的试答不因此重跑
 - high/mix/low 只是窗的把握标签，不是三个方法
 - 无窗题直接交付 Full-CoT
 - 有窗题从窗末继续，主预算只剩 `32768 - prefix_tokens`

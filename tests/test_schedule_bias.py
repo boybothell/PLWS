@@ -23,11 +23,11 @@ def test_front_fades_to_zero_and_back_ends_at_negative_infinity() -> None:
     assert continuation_bias("back", HORIZON + 100) == float("-inf")
 
 
-def test_count_bias_uses_the_same_trace_as_its_scale() -> None:
-    assert count_bias(0, 10) == 0.0
-    assert count_bias(11, 10) == -PEAK / 2
-    assert count_bias(1, 0) == -PEAK / 2
-    assert count_bias(1000, 0) == -PEAK * 1000 / 1001
+def test_count_bias_saturates_toward_the_peak() -> None:
+    assert count_bias(0, 0.5) == 0.0
+    assert count_bias(1, 0.5) == -PEAK * 0.5
+    assert count_bias(2, 0.5) == -PEAK * 0.75
+    assert count_bias(8, 0.5) == -PEAK * (1.0 - 0.5**8)
 
 
 def test_completed_core_sequences_count_each_end_position_once() -> None:
