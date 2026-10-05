@@ -2,11 +2,12 @@
 # Dynamic count-bias queue. One cold load at a time. Does not write 窗后压 scores.
 #
 #   GPUS=2,3,4,5 MODELS=r1_7b SEEDS=42 \
-#     DATASETS=math-500,aime25 RHOS=0.80,0.90,0.95,0.98 \
+#     DATASETS=math-500,aime25 RHOS=0.98 \
 #     bash scripts/run_count_bias_queue.sh
 #
-# One rho per output directory. 32B takes two GPUs. 1.5B, 7B, and Llama-8B
-# submit the whole remaining shard. 14B uses 32. 32B uses 16.
+# Main-table 随频次 uses RHOS=0.98 only. Multi-rho is ablation, not the host cell.
+# One rho per output directory. TP follows the map below; tp_size at generate time
+# is len(CUDA_VISIBLE_DEVICES). BATCH 0 = whole remaining shard in one generate.
 set -euo pipefail
 
 ROOT="${PLWS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -68,8 +69,21 @@ BATCH = {
     "r1_llama_8b": "0",
     "r1_14b": "32",
     "r1_32b": "16",
+    # Non-R1 small: same as 7B / Llama on L40 — whole remaining shard.
+    "nemotron_8b": "0",
+    "qwen3_4b": "0",
+    "qwen3_8b": "0",
+    # Non-R1 ≥30B (5090 profile TP=4). Override with PLWS_TP if the host differs.
+    "qwen3_30b_a3b": "16",
+    "qwen3_32b": "16",
+    "qwq_32b": "16",
 }
-TP = {"r1_32b": 2}
+TP = {
+    "r1_32b": 2,
+    "qwen3_30b_a3b": int(os.environ.get("PLWS_TP", "4")),
+    "qwen3_32b": int(os.environ.get("PLWS_TP", "4")),
+    "qwq_32b": int(os.environ.get("PLWS_TP", "4")),
+}
 LOG_ROOT = ROOT / "results" / "runs" / "plws" / "count_bias" / "queue_logs"
 STATUS = Path(
     os.environ.get(
@@ -94,17 +108,26 @@ def key(model: str, dataset: str, seed: int, rho: str) -> str:
 
 
 def jobs_path(model: str, dataset: str, seed: int) -> Path:
-    return (
+    """Prefer tmp/incoming_main, else the canonical window_first tree."""
+    relative = (
+        Path(model) / dataset / f"seed_{seed}" / "jobs/firstwin.jsonl"
+    )
+    candidates = (
+        ROOT / "tmp/incoming_main" / relative,
+        ROOT
+        / "tmp/incoming_main/results/runs/plws/window_first/k_4/lexicon_core"
+        / relative,
         ROOT
         / "results/runs/plws/window_first/k_4/lexicon_core"
-        / model
-        / dataset
-        / f"seed_{seed}"
-        / "jobs/firstwin.jsonl"
+        / relative,
     )
+    for path in candidates:
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+    return candidates[-1]
 
 
-def out_path(model: str, dataset: str, seed: int, rho: str) -> Path:
+def out_dir(model: str, dataset: str, seed: int, rho: str) -> Path:
     return (
         ROOT
         / "results/runs/plws/count_bias"
@@ -112,8 +135,11 @@ def out_path(model: str, dataset: str, seed: int, rho: str) -> Path:
         / model
         / dataset
         / f"seed_{seed}"
-        / "shard_0.jsonl"
     )
+
+
+def out_path(model: str, dataset: str, seed: int, rho: str) -> Path:
+    return out_dir(model, dataset, seed, rho) / "shard_0.jsonl"
 
 
 def job_count(model: str, dataset: str, seed: int) -> int:
@@ -124,23 +150,24 @@ def job_count(model: str, dataset: str, seed: int) -> int:
 
 
 def finished_count(model: str, dataset: str, seed: int, rho: str) -> int:
-    path = out_path(model, dataset, seed, rho)
+    folder = out_dir(model, dataset, seed, rho)
     found: set[str] = set()
-    if not path.is_file():
+    if not folder.is_dir():
         return 0
     target = float(rho)
-    for line in path.open():
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        if row.get("bias_schedule") != "count":
-            continue
-        if row.get("bias_formula") != "one_minus_rho_pow_n":
-            continue
-        if abs(float(row.get("bias_rho") or -1) - target) > 1e-9:
-            continue
-        if row.get("status") in {"ok", "too_long"} and row.get("uid"):
-            found.add(str(row["uid"]))
+    for path in sorted(folder.glob("shard_*.jsonl")):
+        for line in path.open():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("bias_schedule") != "count":
+                continue
+            if row.get("bias_formula") != "one_minus_rho_pow_n":
+                continue
+            if abs(float(row.get("bias_rho") or -1) - target) > 1e-9:
+                continue
+            if row.get("status") in {"ok", "too_long"} and row.get("uid"):
+                found.add(str(row["uid"]))
     return len(found)
 
 
@@ -346,10 +373,11 @@ def launch(model: str, dataset: str, seed: int, rho: str, gpu: str, attempt: int
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     log_path = LOG_ROOT / f"{key(model, dataset, seed, rho)}.attempt_{attempt}.log"
     out = out_path(model, dataset, seed, rho)
+    jobs = jobs_path(model, dataset, seed)
     cuda = cuda_visible(gpu)
     with log_path.open("ab") as handle:
         handle.write(
-            f"\n# {time.strftime('%Y-%m-%dT%H:%M:%S%z')} start gpus={gpu} cuda={cuda} rho={rho}\n".encode()
+            f"\n# {time.strftime('%Y-%m-%dT%H:%M:%S%z')} start gpus={gpu} cuda={cuda} rho={rho} jobs={jobs}\n".encode()
         )
         process = subprocess.Popen(
             ["bash", str(ROOT / "scripts/run_count_bias_cell.sh")],
@@ -362,6 +390,7 @@ def launch(model: str, dataset: str, seed: int, rho: str, gpu: str, attempt: int
                 "SEED": str(seed),
                 "RHO": rho,
                 "OUT": str(out),
+                "JOBS": str(jobs),
                 "GPU": cuda,
                 "BATCH_SIZE": BATCH.get(model, "0"),
             },

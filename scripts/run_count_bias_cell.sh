@@ -50,15 +50,33 @@ export VLLM_LENS_DISABLE=1
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 plws_export_cuda_runtime
 
-jobs="$ROOT/results/runs/plws/window_first/k_4/lexicon_core/$MODEL_TAG/$DATASET/seed_$SEED/jobs/firstwin.jsonl"
 rho_tag="rho_${RHO//./p}"
 out="${OUT:-$ROOT/results/runs/plws/count_bias/$rho_tag/$MODEL_TAG/$DATASET/seed_$SEED/shard_${SHARD_ID}.jsonl}"
 limit_args=()
 if [[ "$LIMIT" != "0" ]]; then
   limit_args=(--limit "$LIMIT")
 fi
-if [[ ! -f "$jobs" ]]; then
-  echo "ERROR: missing jobs $jobs" >&2
+
+# Prefer JOBS from the queue / caller. Else try incoming_main, then the
+# canonical window_first tree.
+if [[ -n "${JOBS:-}" && -f "$JOBS" ]]; then
+  jobs="$JOBS"
+else
+  rel="$MODEL_TAG/$DATASET/seed_$SEED/jobs/firstwin.jsonl"
+  jobs=""
+  for candidate in \
+    "$ROOT/tmp/incoming_main/$rel" \
+    "$ROOT/tmp/incoming_main/results/runs/plws/window_first/k_4/lexicon_core/$rel" \
+    "$ROOT/results/runs/plws/window_first/k_4/lexicon_core/$rel"
+  do
+    if [[ -f "$candidate" && -s "$candidate" ]]; then
+      jobs="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$jobs" || ! -f "$jobs" ]]; then
+  echo "ERROR: missing jobs for $MODEL_TAG $DATASET seed=$SEED" >&2
   exit 1
 fi
 
