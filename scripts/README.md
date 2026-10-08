@@ -11,7 +11,9 @@
 | 环境与资产预检 | `preflight_rental_server.sh` |
 | 单个大模型 cell | `run_large_model_cell.sh` |
 | 多卡 PUMA/PLWS fill | `run_contest_fill_queue.py`（租卡必须传现行五集和 `--seeds 42,0,1`） |
-| 只采 Full-CoT 后停 | 同上，加 `--fullcot-only`（不跑 PUMA / dense / PLWS） |
+| 只采 Full-CoT 后停 | `run_contest_fill_queue.py --fullcot-only`（不跑 PUMA / dense / PLWS） |
+| NoThinking 单格 | `run_nothinking_cell.sh`（Ma 2025；`puma-fullcot-32k-v2`） |
+| extra-baseline 队列 | `run_extra_baseline_queue.py`（默认 AC+Dynasor；NoThinking 传 `--methods nothinking`） |
 | 刷新缺格清单 | `report_large_model_rental_inventory.py`（现行范围报缺；传输核验仍扫历史 180 格） |
 | 核对已落盘判分旗标 | `audit_grader_flags.py`（默认只报；`--fix` 只把 False 升 True） |
 
@@ -62,6 +64,9 @@ run_deer_official.sh
 
 ## 其他脚本
 
+- `olympiad_post_agreement/`：Olympiad 窗后动机图收口（`</think>` 之后试答、
+  think-then-post 序列、宽图）。说明见该目录 `README.md`。产物仍写
+  `tmp/plws_step_probe/`。
 - `report_*`、`analyze_*`、`score_*`：结果重算和论文分析，保留用于复现，不是
   GPU 调度入口。
 - `run_*_queue.py`：本机历史或小模型队列。其 GPU 池、模型范围和 parked 状态
