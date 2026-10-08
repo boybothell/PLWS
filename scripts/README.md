@@ -67,6 +67,10 @@ run_deer_official.sh
 - `olympiad_post_agreement/`：Olympiad 窗后动机图收口（`</think>` 之后试答、
   think-then-post 序列、宽图）。说明见该目录 `README.md`。产物仍写
   `tmp/plws_step_probe/`。
+- `run_boxed_close.sh`：已有窗后压（`SCORE_KIND=firstwin`）或 rho 0.98 随频次
+  （`SCORE_KIND=count`）轨迹，在模型自己的 `</think>` 后接
+  `The final answer is \boxed`，逐 token 收到外层 `}`。`GPU`、`MODEL_TAG`、
+  `DATASETS` 用环境变量。产物写 `tmp/boxed_close/`。MoE 预热默认关掉。
 - `report_*`、`analyze_*`、`score_*`：结果重算和论文分析，保留用于复现，不是
   GPU 调度入口。
 - `run_*_queue.py`：本机历史或小模型队列。其 GPU 池、模型范围和 parked 状态
